@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Shadow Tasks</string>
+    <string name="title_activity_main">Shadow Tasks</string>
+    <string name="package_name">com.shadowtasks.app</string>
+    <string name="custom_url_scheme">com.shadowtasks.app</string>
+</resources>
