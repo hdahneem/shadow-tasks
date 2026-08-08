@@ -6,6 +6,7 @@ import { Sidebar } from './Sidebar';
 import { CreateFolderModal } from './CreateFolderModal';
 import { CreateProjectModal } from './CreateProjectModal';
 import { CreateProjectFromTemplateModal } from './CreateProjectFromTemplateModal';
+import { ImportCsvModal } from './ImportCsvModal';
 import { CommandPalette } from './CommandPalette';
 import { ShortcutsHelp } from './ShortcutsHelp';
 import { SettingsModal } from './SettingsModal';
@@ -19,6 +20,10 @@ export function AppShell() {
 
   const loaded = useStore((s) => s.loaded);
   const loadAll = useStore((s) => s.loadAll);
+  // A non-empty local cache (see useStore's partialize) means there's something to
+  // show immediately even if loadAll() can't reach the network right now — offline
+  // cold starts should render the last-known data, not block on a full-screen error.
+  const hasPersistedData = useStore((s) => s.tasks.length > 0 || s.folders.length > 0 || s.projects.length > 0);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [navOpen, setNavOpen] = useState(false);
@@ -26,6 +31,7 @@ export function AppShell() {
   const [creatingProjectIn, setCreatingProjectIn] = useState<string | null>(null);
   const [showProjectModal, setShowProjectModal] = useState(false);
   const [showProjectFromTemplateModal, setShowProjectFromTemplateModal] = useState(false);
+  const [showImportCsvModal, setShowImportCsvModal] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -34,9 +40,14 @@ export function AppShell() {
 
   useEffect(() => {
     if (status === 'authenticated' && !loaded) {
-      loadAll().catch(() => setLoadError('Could not load your data. Check your connection and retry.'));
+      loadAll().catch(() => {
+        // With cached data already on screen, a failed background refresh isn't
+        // fatal — SyncManager's offline indicator communicates the connectivity
+        // problem instead of blocking the whole UI on it.
+        if (!hasPersistedData) setLoadError('Could not load your data. Check your connection and retry.');
+      });
     }
-  }, [status, loaded, loadAll]);
+  }, [status, loaded, loadAll, hasPersistedData]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -108,7 +119,9 @@ export function AppShell() {
           <button
             onClick={() => {
               setLoadError(null);
-              loadAll().catch(() => setLoadError('Could not load your data. Check your connection and retry.'));
+              loadAll().catch(() => {
+                if (!hasPersistedData) setLoadError('Could not load your data. Check your connection and retry.');
+              });
             }}
             className="hud-btn px-4 py-2 text-sm cursor-pointer"
           >
@@ -119,7 +132,7 @@ export function AppShell() {
     );
   }
 
-  if (!loaded) {
+  if (!loaded && !hasPersistedData) {
     return (
       <div className="hud-grid min-h-screen flex items-center justify-center">
         <p className="font-display text-sm tracking-widest text-mist uppercase animate-pulse">
@@ -145,6 +158,7 @@ export function AppShell() {
         openCreateFolder: () => setCreatingFolder(true),
         openCreateProject,
         openSettings: () => setSettingsOpen(true),
+        openImportCsv: () => setShowImportCsvModal(true),
       }}
     >
       <div className="hud-grid min-h-screen flex relative z-10">
@@ -197,6 +211,7 @@ export function AppShell() {
             }}
           />
         )}
+        {showImportCsvModal && <ImportCsvModal onClose={() => setShowImportCsvModal(false)} />}
         <CommandPalette
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}

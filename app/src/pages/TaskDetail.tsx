@@ -59,6 +59,15 @@ export function TaskDetail() {
 
   const refetch = useCallback(async () => {
     if (!taskId) return;
+    // Tasks created offline live only in the local store until they sync — there's
+    // no server id to GET yet, so read the cached copy instead of hitting the API.
+    if (taskId.startsWith('temp-')) {
+      const cached = useStore.getState().tasks.find((t) => t.id === taskId);
+      setTask(cached ?? null);
+      setNotFound(!cached);
+      setLoading(false);
+      return;
+    }
     try {
       const fresh = await tasksApi.get(taskId);
       setTask(fresh);
@@ -76,6 +85,15 @@ export function TaskDetail() {
     setLoading(true);
     refetch();
   }, [refetch]);
+
+  // If this temp-id task syncs while its detail page is open, swap over to the
+  // real id it was assigned rather than leaving the user on a now-dead URL.
+  const lastResolvedTempId = useStore((s) => s.lastResolvedTempId);
+  useEffect(() => {
+    if (lastResolvedTempId && lastResolvedTempId.tempId === taskId) {
+      navigate(`/tasks/${lastResolvedTempId.realId}`, { replace: true });
+    }
+  }, [lastResolvedTempId, taskId, navigate]);
 
   useEffect(() => {
     if (!task?.projectId) return;
@@ -105,9 +123,26 @@ export function TaskDetail() {
 
   const patch = async (data: Parameters<typeof tasksApi.update>[1]) => {
     if (!task) return;
-    const updated = await tasksApi.update(task.id, data);
-    setTask((t) => (t ? { ...t, ...updated } : t));
-    useStore.getState().refreshTasks().catch(() => {});
+    const inGlobalStore = useStore.getState().tasks.some((t) => t.id === task.id);
+    if (inGlobalStore) {
+      // Routes through the store so offline edits queue correctly (see useStore's
+      // updateTask) instead of always hitting the network directly.
+      await useStore.getState().updateTask(task.id, data);
+      const stored = useStore.getState().tasks.find((t) => t.id === task.id);
+      if (stored) setTask(stored);
+      return;
+    }
+    // Subtasks aren't in the global cache, so they always go straight to the API —
+    // that path has no offline support (see the offline-scope decision) and needs
+    // its own error surfacing since it isn't wrapped by the store's toast handling.
+    try {
+      const updated = await tasksApi.update(task.id, data);
+      setTask((t) => (t ? { ...t, ...updated } : t));
+      useStore.getState().refreshTasks().catch(() => {});
+    } catch (err) {
+      toast.error(errorMessage(err, 'Could not update quest.'));
+      throw err;
+    }
   };
 
   const toggleDone = async () => {
@@ -438,6 +473,15 @@ export function TaskDetail() {
         </div>
       </Panel>
 
+      {task.id.startsWith('temp-') ? (
+        <Panel className="p-6">
+          <p className="text-mist-dim text-sm">
+            Custom fields, subtasks, dependencies, assignees, tags, time tracking, sharing, attachments, and
+            comments all need this quest to sync with the server first — available once you're back online.
+          </p>
+        </Panel>
+      ) : (
+        <>
       <Panel className="p-6">
         <h2 className="font-display font-bold uppercase tracking-widest text-sm text-cyan-bright mb-3">
           Custom Fields
@@ -705,6 +749,8 @@ export function TaskDetail() {
           ))}
         </div>
       </Panel>
+        </>
+      )}
 
       {savingTemplate && (
         <SaveAsTemplateModal

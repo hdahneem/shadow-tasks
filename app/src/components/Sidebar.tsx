@@ -33,7 +33,7 @@ export function Sidebar({
   const logout = useAuthStore((s) => s.logout);
   const user = useAuthStore((s) => s.user);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const { openSettings } = useModalActions();
+  const { openSettings, openImportCsv } = useModalActions();
   const location = useLocation();
   const navigateTo = useNavigate();
 
@@ -47,11 +47,23 @@ export function Sidebar({
   const isActive = (path: string) => location.pathname === path;
 
   const navBtn = (active: boolean) =>
-    `w-full text-left px-3 py-1.5 font-body text-sm tracking-wide truncate transition-colors cursor-pointer ${
+    `w-full text-left px-3 py-1.5 font-body text-sm tracking-wide flex items-center gap-1.5 transition-colors cursor-pointer ${
       active
         ? 'text-cyan-bright bg-cyan-dim/15 border-l-2 border-cyan'
         : 'text-mist hover:text-cyan-bright hover:bg-cyan-dim/5 border-l-2 border-transparent'
     }`;
+
+  // Icon glyph and label are separate spans (not one truncated text node) —
+  // mixing a fallback-font icon character with body text in a single
+  // text-overflow:ellipsis run corrupts glyph rendering on some WebViews.
+  const NavLabel = ({ icon, children }: { icon: string; children: string }) => (
+    <>
+      <span className="shrink-0" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="truncate">{children}</span>
+    </>
+  );
 
   return (
     <>
@@ -81,33 +93,33 @@ export function Sidebar({
         </Panel>
 
         <Panel className="flex-1 min-h-0 flex flex-col">
-          <div className="p-3 flex flex-col gap-1 overflow-y-auto">
+          <div className="p-3 flex flex-col gap-1 min-h-0 overflow-y-auto">
             <button className={navBtn(isActive('/'))} onClick={() => go('/')}>
-              ⌂ Status Window
+              <NavLabel icon="⌂">Status Window</NavLabel>
             </button>
             <button className={navBtn(isActive('/all'))} onClick={() => go('/all')}>
-              ◆ All Quests
+              <NavLabel icon="◆">All Quests</NavLabel>
             </button>
             <button className={navBtn(isActive('/calendar'))} onClick={() => go('/calendar')}>
-              ▤ Calendar
+              <NavLabel icon="▤">Calendar</NavLabel>
             </button>
             <button className={navBtn(isActive('/search'))} onClick={() => go('/search')}>
-              ⌕ Search
+              <NavLabel icon="⌕">Search</NavLabel>
             </button>
             <button className={navBtn(isActive('/archived'))} onClick={() => go('/archived')}>
-              ⧉ Archived
+              <NavLabel icon="⧉">Archived</NavLabel>
             </button>
             <button className={navBtn(location.pathname.startsWith('/docs'))} onClick={() => go('/docs')}>
-              ▥ Docs
+              <NavLabel icon="▥">Docs</NavLabel>
             </button>
             <button className={navBtn(isActive('/activity'))} onClick={() => go('/activity')}>
-              ≡ Activity
+              <NavLabel icon="≡">Activity</NavLabel>
             </button>
             <button className={navBtn(isActive('/workload'))} onClick={() => go('/workload')}>
-              ⚖ Workload
+              <NavLabel icon="⚖">Workload</NavLabel>
             </button>
             <button className={navBtn(isActive('/badges'))} onClick={() => go('/badges')}>
-              🎖 Badges
+              <NavLabel icon="🎖">Badges</NavLabel>
             </button>
 
             <div className="mt-3 mb-1 flex items-center justify-between px-1">
@@ -132,7 +144,7 @@ export function Sidebar({
                 <div key={f.id}>
                   <div className="flex items-center group">
                     <button
-                      className={navBtn(isActive(`/folders/${f.id}`)) + ' flex-1 flex items-center gap-1.5'}
+                      className={navBtn(isActive(`/folders/${f.id}`)) + ' flex-1'}
                       onClick={() => go(`/folders/${f.id}`)}
                     >
                       <span
@@ -176,7 +188,7 @@ export function Sidebar({
                           className={navBtn(isActive(`/projects/${p.id}`)) + ' text-xs'}
                           onClick={() => go(`/projects/${p.id}`)}
                         >
-                          {p.name}
+                          <span className="truncate">{p.name}</span>
                         </button>
                       ))}
                     </div>
@@ -191,6 +203,13 @@ export function Sidebar({
               </span>
               {isAdmin && (
                 <span className="flex items-center gap-2">
+                  <button
+                    onClick={openImportCsv}
+                    className="text-cyan-dim hover:text-cyan-bright text-xs leading-none cursor-pointer"
+                    title="Import from CSV"
+                  >
+                    ⇪
+                  </button>
                   <button
                     onClick={() => onCreateProjectFromTemplate(null)}
                     className="text-cyan-dim hover:text-cyan-bright text-xs leading-none cursor-pointer"
@@ -214,7 +233,7 @@ export function Sidebar({
                 className={navBtn(isActive(`/projects/${p.id}`))}
                 onClick={() => go(`/projects/${p.id}`)}
               >
-                {p.name}
+                <span className="truncate">{p.name}</span>
               </button>
             ))}
           </div>

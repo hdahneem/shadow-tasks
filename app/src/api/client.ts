@@ -10,6 +10,7 @@ export function resolveAssetUrl(url: string): string {
 
 const ACCESS_KEY = 'shadow-tasks:access-token';
 const REFRESH_KEY = 'shadow-tasks:refresh-token';
+const USER_KEY = 'shadow-tasks:cached-user';
 
 export const tokenStore = {
   get access() {
@@ -28,6 +29,21 @@ export const tokenStore = {
   },
 };
 
+/** Last-known `/auth/me` response, used so a cold start while offline can stay
+ * signed in against cached data instead of bouncing to the login screen. */
+export const userCache = {
+  get<T>(): T | null {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as T) : null;
+  },
+  set(user: unknown) {
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+  },
+  clear() {
+    localStorage.removeItem(USER_KEY);
+  },
+};
+
 export class ApiError extends Error {
   status: number;
   details?: unknown;
@@ -39,7 +55,14 @@ export class ApiError extends Error {
 }
 
 export function errorMessage(err: unknown, fallback = 'Something went wrong. Please try again.'): string {
-  return err instanceof ApiError ? err.message : fallback;
+  if (err instanceof ApiError) return err.message;
+  // A raw (non-ApiError) failure here means fetch() itself threw — the request
+  // never reached the server. Every feature without offline support (attachments,
+  // comments, custom fields, dependencies, workspace/project/list CRUD, etc.) hits
+  // this exact path when attempted offline, so a single check here gives all of
+  // them a clear "you're offline" message for free, instead of a generic one.
+  if (!navigator.onLine) return "You're offline — this needs a connection.";
+  return fallback;
 }
 
 let refreshPromise: Promise<string | null> | null = null;

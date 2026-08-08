@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { xpForLevel, rankForLevel } from './useStore';
 
 vi.mock('../api/services', () => ({
@@ -299,16 +299,259 @@ describe('failed mutations surface an error toast', () => {
     expect(useStore.getState().tasks).toHaveLength(1);
   });
 
-  it('falls back to a generic message when the failure is not an ApiError', async () => {
+  it('queues the op offline instead of throwing when the failure is not an ApiError', async () => {
+    // navigator.onLine is unreliable on some WebViews (observed on a real device:
+    // it stays true even with the radios fully off), so a raw fetch failure here
+    // is treated as "actually offline" and queued for replay rather than surfaced
+    // as a dead-end error.
     const { tasksApi } = await import('../api/services');
     const { useStore } = await import('./useStore');
     const { useToastStore } = await import('./useToastStore');
 
-    useStore.setState({ tasks: [] });
+    const task = {
+      id: 't1',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Clear the gate',
+      priority: 'medium' as const,
+      done: false,
+      position: 0,
+      createdAt: '',
+      updatedAt: '',
+      progress: 0,
+    };
+    useStore.setState({ tasks: [task] });
     vi.mocked(tasksApi.remove).mockRejectedValue(new Error('network down'));
 
-    await expect(useStore.getState().deleteTask('missing')).rejects.toThrow('network down');
+    await expect(useStore.getState().deleteTask('t1')).resolves.toBeUndefined();
 
-    expect(useToastStore.getState().toasts[0].message).toBe('Could not delete quest.');
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(useStore.getState().tasks).toHaveLength(0);
+    expect(useStore.getState().pendingOps).toEqual([
+      expect.objectContaining({ kind: 'delete', taskId: 't1' }),
+    ]);
+  });
+});
+
+describe('createTask', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('creates the task via the API, appends it to tasks, and returns it', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+
+    const created = {
+      id: 't1',
+      listId: 'l1',
+      parentTaskId: 'q1',
+      title: 'Check gate stability',
+      priority: 'medium' as const,
+      done: false,
+      position: 0,
+      createdAt: '',
+      updatedAt: '',
+      progress: 0,
+    };
+    vi.mocked(tasksApi.create).mockResolvedValue(created);
+
+    const result = await useStore.getState().createTask('l1', {
+      title: 'Check gate stability',
+      priority: 'medium',
+      parentTaskId: 'q1',
+    });
+
+    expect(tasksApi.create).toHaveBeenCalledWith('l1', {
+      title: 'Check gate stability',
+      priority: 'medium',
+      parentTaskId: 'q1',
+    });
+    expect(result).toEqual(created);
+    expect(useStore.getState().tasks).toContainEqual(created);
+  });
+
+  it('propagates a thrown error without touching the offline queue', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { ApiError } = await import('../api/client');
+
+    useStore.setState({ pendingOps: [], tasks: [] });
+    vi.mocked(tasksApi.create).mockRejectedValue(new ApiError(400, 'Title required'));
+
+    await expect(useStore.getState().createTask('l1', { title: '' })).rejects.toThrow('Title required');
+    expect(useStore.getState().pendingOps).toEqual([]);
+    expect(useStore.getState().tasks).toEqual([]);
+  });
+});
+
+describe('offline mutations', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+  afterEach(() => {
+    // restore regardless of how the test exits, so a thrown assertion never
+    // leaves navigator.onLine stubbed false for whatever test file runs next
+    Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+  });
+
+  function stubOffline() {
+    Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+  }
+  function stubOnline() {
+    Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+  }
+
+  it('addTask queues a create op and shows an optimistic temp task, without calling the API', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+
+    stubOffline();
+    useStore.setState({ tasks: [], pendingOps: [] });
+
+    await useStore.getState().addTask('l1', 'Buy milk', 'medium', undefined, undefined);
+
+    expect(tasksApi.create).not.toHaveBeenCalled();
+    const { tasks, pendingOps } = useStore.getState();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toMatch(/^temp-/);
+    expect(tasks[0].title).toBe('Buy milk');
+    expect(pendingOps).toHaveLength(1);
+    expect(pendingOps[0]).toMatchObject({ kind: 'create', tempId: tasks[0].id, listId: 'l1' });
+
+    stubOnline();
+  });
+
+  it('addTask calls the API and does not queue anything when online (regression)', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+
+    stubOnline();
+    useStore.setState({ tasks: [], pendingOps: [] });
+    const created = {
+      id: 'real-1',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Buy milk',
+      priority: 'medium' as const,
+      done: false,
+      position: 0,
+      createdAt: '',
+      updatedAt: '',
+      progress: 0,
+    };
+    vi.mocked(tasksApi.create).mockResolvedValue(created);
+
+    await useStore.getState().addTask('l1', 'Buy milk', 'medium', undefined, undefined);
+
+    expect(tasksApi.create).toHaveBeenCalledWith('l1', {
+      title: 'Buy milk',
+      priority: 'medium',
+      dueDate: undefined,
+      description: undefined,
+    });
+    const { tasks, pendingOps } = useStore.getState();
+    expect(tasks).toEqual([created]);
+    expect(pendingOps).toHaveLength(0);
+  });
+
+  it('toggleTask queues a toggleDone op and applies the change optimistically while offline', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+
+    stubOffline();
+    const task = {
+      id: 't1',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Clear the gate',
+      priority: 'medium' as const,
+      done: false,
+      position: 0,
+      createdAt: '',
+      updatedAt: '',
+      progress: 0,
+    };
+    useStore.setState({ tasks: [task], pendingOps: [], hunter: { level: 1, xp: 0, tasksCompleted: 0, highestLevel: 1 } });
+
+    await useStore.getState().toggleTask('t1');
+
+    expect(tasksApi.update).not.toHaveBeenCalled();
+    expect(useStore.getState().tasks[0].done).toBe(true);
+    expect(useStore.getState().pendingOps).toEqual([
+      expect.objectContaining({ kind: 'toggleDone', taskId: 't1', done: true }),
+    ]);
+
+    stubOnline();
+  });
+
+  it('updateTask and deleteTask queue their ops while offline instead of calling the API', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+
+    stubOffline();
+    const task = {
+      id: 't1',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Clear the gate',
+      priority: 'medium' as const,
+      done: false,
+      position: 0,
+      createdAt: '',
+      updatedAt: '',
+      progress: 0,
+    };
+    useStore.setState({ tasks: [task], pendingOps: [] });
+
+    await useStore.getState().updateTask('t1', { title: 'Renamed' });
+    expect(useStore.getState().tasks[0].title).toBe('Renamed');
+
+    await useStore.getState().deleteTask('t1');
+    expect(useStore.getState().tasks).toHaveLength(0);
+
+    expect(tasksApi.update).not.toHaveBeenCalled();
+    expect(tasksApi.remove).not.toHaveBeenCalled();
+    // the update op should have been dropped when the delete came in, per the
+    // offlineQueue collapse rules, leaving just the delete queued.
+    expect(useStore.getState().pendingOps).toEqual([expect.objectContaining({ kind: 'delete', taskId: 't1' })]);
+
+    stubOnline();
+  });
+
+  it('replayPendingOps replays the queue against the real API and clears it', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+
+    stubOnline();
+    const created = {
+      id: 'real-2',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Synced quest',
+      priority: 'medium' as const,
+      done: false,
+      position: 0,
+      createdAt: '',
+      updatedAt: '',
+      progress: 0,
+    };
+    vi.mocked(tasksApi.create).mockResolvedValue(created);
+
+    useStore.setState({
+      tasks: [{ ...created, id: 'temp-1', title: 'Synced quest' }],
+      pendingOps: [
+        { id: 'op1', kind: 'create', tempId: 'temp-1', listId: 'l1', payload: { title: 'Synced quest' }, createdAt: 1 },
+      ],
+    });
+
+    await useStore.getState().replayPendingOps();
+
+    expect(tasksApi.create).toHaveBeenCalledWith('l1', { title: 'Synced quest' });
+    expect(useStore.getState().pendingOps).toHaveLength(0);
+    expect(useStore.getState().tasks.find((t) => t.id === 'real-2')).toBeTruthy();
+    expect(useStore.getState().tasks.find((t) => t.id === 'temp-1')).toBeUndefined();
   });
 });

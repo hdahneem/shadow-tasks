@@ -101,6 +101,26 @@ tasksRouter.get('/', async (req: AuthedRequest, res) => {
   }
 });
 
+// --- Sync status: a cheap signature of "has anything in the visible task set
+// changed" for the mobile client to compare against what it cached at its last
+// clean sync, without re-downloading every task just to check. Must be registered
+// before GET /:id below, or "sync-status" would be swallowed as an :id param. ---
+
+tasksRouter.get('/sync-status', async (req: AuthedRequest, res) => {
+  const includeDone = req.query.includeDone === 'true';
+  const archived = req.query.archived === 'true';
+  const where = {
+    parentTaskId: null,
+    archivedAt: archived ? { not: null } : null,
+    ...(includeDone || archived ? {} : { done: false }),
+    list: { project: { workspace: { members: { some: { userId: req.userId } } } } },
+  };
+
+  const agg = await prisma.task.aggregate({ where, _max: { updatedAt: true }, _count: true });
+
+  res.json({ lastModifiedAt: agg._max.updatedAt?.toISOString() ?? null, count: agg._count });
+});
+
 // --- List tasks for a given list (top-level only) ---
 
 tasksRouter.get('/by-list/:listId', async (req: AuthedRequest, res) => {

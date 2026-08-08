@@ -4,6 +4,7 @@ export interface ModalActions {
   openCreateFolder: () => void;
   openCreateProject: (folderId: string | null) => void;
   openSettings: () => void;
+  openImportCsv: () => void;
 }
 
 export const ModalActionsContext = createContext<ModalActions | null>(null);

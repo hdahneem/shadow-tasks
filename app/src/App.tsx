@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuthStore } from './store/useAuthStore';
 import { AppShell } from './components/AppShell';
 import { ToastContainer } from './components/ToastContainer';
+import { SyncManager } from './components/SyncManager';
 
 const Dashboard = lazy(() => import('./pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const FolderView = lazy(() => import('./pages/FolderView').then((m) => ({ default: m.FolderView })));
@@ -58,6 +59,7 @@ function App() {
   return (
     <>
       <ToastContainer />
+      <SyncManager />
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/share/:token" element={<PublicTaskView />} />

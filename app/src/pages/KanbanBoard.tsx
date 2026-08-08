@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import { statusesApi, tasksApi } from '../api/services';
+import { useIsOnline } from '../lib/useIsOnline';
+import { toast } from '../store/useToastStore';
 import type { Status, Task } from '../types';
 
 const PRIORITY_COLOR: Record<Task['priority'], string> = {
@@ -24,6 +26,7 @@ export function KanbanBoard() {
   const [loading, setLoading] = useState(true);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [dragOverStatusId, setDragOverStatusId] = useState<string | null>(null);
+  const isOnline = useIsOnline();
 
   const refetch = useCallback(async () => {
     if (!projectId) return;
@@ -54,6 +57,13 @@ export function KanbanBoard() {
   const moveTask = async (taskId: string, statusId: string) => {
     const task = tasks.find((t) => t.id === taskId);
     if (!task || task.statusId === statusId) return;
+    if (!isOnline) {
+      // Status moves run automations server-side and have no offline queue — the
+      // optimistic update below has no revert path on failure, so block the drop
+      // outright rather than leaving the board silently out of sync.
+      toast.error("You're offline — moving quests between statuses needs a connection.");
+      return;
+    }
     // optimistic move so the drop feels instant, then reconcile with the server
     setTasks((prev) => prev.map((t) => (t.id === taskId ? { ...t, statusId } : t)));
     try {

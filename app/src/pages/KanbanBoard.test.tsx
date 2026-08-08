@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { KanbanBoard } from './KanbanBoard';
 import { useStore } from '../store/useStore';
@@ -89,5 +89,26 @@ describe('KanbanBoard', () => {
     renderBoard();
 
     await waitFor(() => expect(screen.getAllByText('No quests here.')).toHaveLength(2));
+  });
+
+  it('blocks dropping a card onto a new status column while offline', async () => {
+    vi.mocked(tasksApi.listForProject).mockResolvedValue([
+      baseTask({ id: 't1', title: 'Scout the entrance', statusId: 's1' }),
+    ]);
+    Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+
+    renderBoard();
+    await waitFor(() => expect(screen.getByText('Scout the entrance')).toBeInTheDocument());
+
+    const card = screen.getByText('Scout the entrance').closest('[draggable="true"]')!;
+    const doneColumn = screen.getByText('Done').closest('div')!.parentElement!;
+    const dataTransfer = { getData: () => 't1', setData: () => {}, effectAllowed: '' };
+
+    fireEvent.dragStart(card, { dataTransfer });
+    fireEvent.drop(doneColumn, { dataTransfer });
+
+    expect(tasksApi.setStatus).not.toHaveBeenCalled();
+
+    Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
   });
 });

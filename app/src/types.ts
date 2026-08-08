@@ -412,6 +412,11 @@ export interface PaginatedTasks {
   pageSize: number;
 }
 
+export interface SyncStatus {
+  lastModifiedAt: string | null;
+  count: number;
+}
+
 export interface TodoList {
   id: string;
   projectId: string;

@@ -4,8 +4,7 @@
 # Personal / reference material — contains real credentials, never commit
 References/
 
-# Built mobile app artifacts — regenerate via `npm run build` + `npx cap sync android` + `./gradlew assembleDebug`
-ShadowTasks.apk
+# Redundant zip wrapper around ShadowTasks.apk (same bytes, just zipped)
 ShadowTasks.apk.zip
 
 # Android build outputs and machine-specific config
@@ -15,3 +14,6 @@ app/android/.gradle/
 app/android/local.properties
 app/android/app/src/main/assets/public/
 app/android/capacitor-cordova-android-plugins/
+
+# Local dev-server runtime state (pids/logs from scripts/start.sh & stop.sh)
+scripts/.run/

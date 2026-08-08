@@ -2,6 +2,8 @@ import { useMemo, useRef, useState } from 'react';
 import { useStore } from '../store/useStore';
 import type { TodoList } from '../types';
 import { parseTasksCsv } from '../lib/csvImport';
+import { useIsOnline } from '../lib/useIsOnline';
+import { toast } from '../store/useToastStore';
 import { Panel } from './Panel';
 import { TaskRow } from './TaskRow';
 import { ProgressBar } from './ProgressBar';
@@ -15,6 +17,7 @@ export function ListSection({ list, canEdit = true }: { list: TodoList; canEdit?
   const renameList = useStore((s) => s.renameList);
   const addTask = useStore((s) => s.addTask);
   const reorderTask = useStore((s) => s.reorderTask);
+  const isOnline = useIsOnline();
   const [creating, setCreating] = useState(false);
   const [creatingFromTemplate, setCreatingFromTemplate] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -58,6 +61,13 @@ export function ListSection({ list, canEdit = true }: { list: TodoList; canEdit?
 
   const handleDrop = (targetId: string) => {
     if (!draggingId || draggingId === targetId) return;
+    if (!isOnline) {
+      // Reordering has no offline queue — it optimistically applies before the
+      // API call resolves, and a failed request here wouldn't revert that, so a
+      // silently-desynced position is worse than just refusing the drop.
+      toast.error("You're offline — reordering needs a connection.");
+      return;
+    }
     const withoutDragged = sorted.filter((t) => t.id !== draggingId);
     const targetIdx = withoutDragged.findIndex((t) => t.id === targetId);
     if (targetIdx === -1) return;

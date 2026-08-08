@@ -27,10 +27,11 @@ import { tagsRouter } from './routes/tags.routes.js';
 export function createApp() {
   const app = express();
 
-  // The Capacitor Android app serves its webview from https://localhost by default
-  // (no server.androidScheme override in capacitor.config.ts), which is a fixed origin
-  // distinct from the desktop dev server's origin — both need to be allowed.
-  app.use(cors({ origin: [env.corsOrigin, 'https://localhost'], credentials: true }));
+  // The Capacitor Android app serves its webview from http://localhost (see
+  // server.androidScheme in capacitor.config.ts — set to 'http' to match this
+  // plain-HTTP backend and avoid mixed-content blocking), a fixed origin distinct
+  // from the desktop dev server's origin — both need to be allowed.
+  app.use(cors({ origin: [env.corsOrigin, 'http://localhost'], credentials: true }));
   app.use(express.json({ limit: '2mb' }));
   app.use('/uploads', express.static(path.resolve(env.uploadsDir)));
 

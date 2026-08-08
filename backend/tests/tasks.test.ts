@@ -293,3 +293,95 @@ describe('GET /tasks pagination', () => {
     expect(res.body.tasks).toHaveLength(0);
   });
 });
+
+describe('GET /tasks/sync-status', () => {
+  it('reports null lastModifiedAt and zero count with no tasks', async () => {
+    const { accessToken } = await registerAndLogin();
+    await createFolderProjectListChain(accessToken);
+    const h = auth(accessToken);
+
+    const res = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ lastModifiedAt: null, count: 0 });
+  });
+
+  it('tracks count and lastModifiedAt as tasks are created and updated', async () => {
+    const { accessToken } = await registerAndLogin();
+    const { list } = await createFolderProjectListChain(accessToken);
+    const h = auth(accessToken);
+
+    const first = await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'First quest' });
+    const afterFirst = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(afterFirst.body.count).toBe(1);
+    expect(afterFirst.body.lastModifiedAt).toBeTruthy();
+
+    await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'Second quest' });
+    const afterSecond = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(afterSecond.body.count).toBe(2);
+
+    await request(app).patch(`/api/v1/tasks/${first.body.id}`).set(h).send({ title: 'First quest, renamed' });
+    const afterUpdate = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(afterUpdate.body.count).toBe(2);
+    expect(new Date(afterUpdate.body.lastModifiedAt).getTime()).toBeGreaterThanOrEqual(
+      new Date(afterSecond.body.lastModifiedAt).getTime()
+    );
+  });
+
+  it('detects a deletion via the count even when lastModifiedAt does not advance', async () => {
+    const { accessToken } = await registerAndLogin();
+    const { list } = await createFolderProjectListChain(accessToken);
+    const h = auth(accessToken);
+
+    // "keeper" is created last, so it holds the highest updatedAt of the two —
+    // deleting "toDelete" (the older row) removes a task without touching
+    // lastModifiedAt, proving count is needed alongside it to catch deletions.
+    await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'To delete' });
+    const toDelete = (await request(app).get('/api/v1/tasks').set(h)).body.find(
+      (t: { title: string }) => t.title === 'To delete'
+    );
+    await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'Keeper' });
+
+    const before = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(before.body.count).toBe(2);
+
+    await request(app).delete(`/api/v1/tasks/${toDelete.id}`).set(h);
+
+    const after = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(after.body.count).toBe(1);
+    expect(after.body.lastModifiedAt).toBe(before.body.lastModifiedAt);
+  });
+
+  it('respects includeDone/archived filters the same way as the main listing', async () => {
+    const { accessToken } = await registerAndLogin();
+    const { list } = await createFolderProjectListChain(accessToken);
+    const h = auth(accessToken);
+
+    await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'Active' });
+    const done = await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'Done' });
+    await request(app).patch(`/api/v1/tasks/${done.body.id}`).set(h).send({ done: true });
+    const archived = await request(app).post(`/api/v1/tasks/by-list/${list.id}`).set(h).send({ title: 'Archived' });
+    await request(app).post(`/api/v1/tasks/${archived.body.id}/archive`).set(h);
+
+    const activeOnly = await request(app).get('/api/v1/tasks/sync-status').set(h);
+    expect(activeOnly.body.count).toBe(1);
+
+    const includeDone = await request(app).get('/api/v1/tasks/sync-status?includeDone=true').set(h);
+    expect(includeDone.body.count).toBe(2);
+
+    const archivedOnly = await request(app).get('/api/v1/tasks/sync-status?archived=true').set(h);
+    expect(archivedOnly.body.count).toBe(1);
+  });
+
+  it("excludes another user's tasks from the signature", async () => {
+    const owner = await registerAndLogin('owner4@example.com');
+    const intruder = await registerAndLogin('intruder4@example.com');
+    const { list } = await createFolderProjectListChain(owner.accessToken);
+    await request(app)
+      .post(`/api/v1/tasks/by-list/${list.id}`)
+      .set(auth(owner.accessToken))
+      .send({ title: 'Private quest' });
+
+    const res = await request(app).get('/api/v1/tasks/sync-status').set(auth(intruder.accessToken));
+    expect(res.body).toEqual({ lastModifiedAt: null, count: 0 });
+  });
+});

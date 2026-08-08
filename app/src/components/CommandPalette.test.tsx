@@ -11,9 +11,10 @@ function renderPalette({ open = true, onClose = vi.fn(), onShowHelp = vi.fn() } 
   const openCreateFolder = vi.fn();
   const openCreateProject = vi.fn();
   const openSettings = vi.fn();
+  const openImportCsv = vi.fn();
   const utils = render(
     <MemoryRouter initialEntries={['/']}>
-      <ModalActionsContext.Provider value={{ openCreateFolder, openCreateProject, openSettings }}>
+      <ModalActionsContext.Provider value={{ openCreateFolder, openCreateProject, openSettings, openImportCsv }}>
         <CommandPalette open={open} onClose={onClose} onShowHelp={onShowHelp} />
         <Routes>
           <Route path="/" element={<div>Status Window Page</div>} />
@@ -25,7 +26,7 @@ function renderPalette({ open = true, onClose = vi.fn(), onShowHelp = vi.fn() } 
       </ModalActionsContext.Provider>
     </MemoryRouter>
   );
-  return { ...utils, onClose, onShowHelp, openCreateFolder, openCreateProject, openSettings };
+  return { ...utils, onClose, onShowHelp, openCreateFolder, openCreateProject, openSettings, openImportCsv };
 }
 
 describe('CommandPalette', () => {

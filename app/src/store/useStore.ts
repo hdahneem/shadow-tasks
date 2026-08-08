@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Folder, Project, TodoList, Task, Rank, Priority, Workspace } from '../types';
+import type { Folder, Project, TodoList, Task, Rank, Priority, Workspace, SyncStatus } from '../types';
 import { PRIORITY_XP } from '../types';
 import {
   foldersApi,
@@ -11,9 +11,11 @@ import {
   taskTemplatesApi,
   workspacesApi,
   taskTagsApi,
+  type TaskUpdateInput,
 } from '../api/services';
-import { errorMessage } from '../api/client';
+import { errorMessage, ApiError } from '../api/client';
 import { toast } from './useToastStore';
+import { appendOp, replayQueue, type PendingOp } from './offlineQueue';
 
 export function xpForLevel(level: number): number {
   return Math.round(100 + (level - 1) * 55);
@@ -77,8 +79,18 @@ interface StoreState {
   loaded: boolean;
   loading: boolean;
   hunter: Hunter;
+  pendingOps: PendingOp[];
+  lastSyncSignature: SyncStatus | null;
+  // A one-shot signal for whoever's looking at a temp-id task's detail page when it
+  // syncs mid-visit — TaskDetail watches for its own taskId showing up here and
+  // navigates to the real id. Deliberately not persisted; it's only meaningful for
+  // whatever's mounted right now.
+  lastResolvedTempId: { tempId: string; realId: string } | null;
 
   loadAll: () => Promise<void>;
+  replayPendingOps: () => Promise<void>;
+  discardPendingOps: () => void;
+  recordSyncSignature: (sig: SyncStatus) => void;
   reset: () => void;
   setCurrentWorkspace: (id: string) => void;
   createWorkspace: (name: string) => Promise<string>;
@@ -104,6 +116,10 @@ interface StoreState {
   deleteList: (id: string) => Promise<void>;
 
   addTask: (listId: string, title: string, priority: Priority, dueDate?: string, notes?: string) => Promise<void>;
+  createTask: (
+    listId: string,
+    input: { title: string; priority?: Priority; dueDate?: string; description?: string; parentTaskId?: string }
+  ) => Promise<Task>;
   createTaskFromTemplate: (templateId: string, listId: string) => Promise<string>;
   toggleTask: (id: string) => Promise<void>;
   setTaskStatus: (id: string, statusId: string) => Promise<Task>;
@@ -133,6 +149,9 @@ export const useStore = create<StoreState>()(
       loaded: false,
       loading: false,
       hunter: emptyHunter,
+      pendingOps: [],
+      lastSyncSignature: null,
+      lastResolvedTempId: null,
 
       loadAll: async () => {
         if (get().loading) return;
@@ -156,8 +175,37 @@ export const useStore = create<StoreState>()(
         }
       },
 
+      // Reconciliation orchestration (when to call these) lives in SyncManager —
+      // these three are just the primitives it needs against store state.
+      replayPendingOps: async () => {
+        const ops = get().pendingOps;
+        if (ops.length === 0) return;
+        await replayQueue(
+          ops,
+          (localId, task) => {
+            set((s) => ({ tasks: s.tasks.map((t) => (t.id === localId ? task : t)) }));
+            if (localId !== task.id) set({ lastResolvedTempId: { tempId: localId, realId: task.id } });
+          },
+          (id) => set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) }))
+        );
+        set({ pendingOps: [] });
+      },
+      discardPendingOps: () => set({ pendingOps: [] }),
+      recordSyncSignature: (sig) => set({ lastSyncSignature: sig }),
+
       reset: () =>
-        set({ folders: [], projects: [], lists: [], tasks: [], workspaces: [], loaded: false, hunter: emptyHunter }),
+        set({
+          folders: [],
+          projects: [],
+          lists: [],
+          tasks: [],
+          workspaces: [],
+          loaded: false,
+          hunter: emptyHunter,
+          pendingOps: [],
+          lastSyncSignature: null,
+          lastResolvedTempId: null,
+        }),
 
       setCurrentWorkspace: (id) => set({ currentWorkspaceId: id }),
 
@@ -278,13 +326,66 @@ export const useStore = create<StoreState>()(
       },
 
       addTask: async (listId, title, priority, dueDate, notes) => {
-        const task = await tasksApi.create(listId, {
-          title,
-          priority,
-          dueDate: dueDate ? new Date(dueDate).toISOString() : undefined,
-          description: notes,
-        });
+        const isoDueDate = dueDate ? new Date(dueDate).toISOString() : undefined;
+        const queueOffline = () => {
+          const tempId = `temp-${crypto.randomUUID()}`;
+          const siblingPositions = get()
+            .tasks.filter((t) => t.listId === listId)
+            .map((t) => t.position);
+          const nowIso = new Date().toISOString();
+          const optimisticTask: Task = {
+            id: tempId,
+            listId,
+            parentTaskId: null,
+            title,
+            priority,
+            done: false,
+            position: siblingPositions.length > 0 ? Math.max(...siblingPositions) + 1 : 0,
+            dueDate: isoDueDate,
+            description: notes,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            progress: 0,
+          };
+          set((s) => ({
+            tasks: [...s.tasks, optimisticTask],
+            pendingOps: appendOp(s.pendingOps, {
+              id: crypto.randomUUID(),
+              kind: 'create',
+              tempId,
+              listId,
+              payload: { title, priority, dueDate: isoDueDate, description: notes },
+              createdAt: Date.now(),
+            }),
+          }));
+        };
+        if (!navigator.onLine) {
+          queueOffline();
+          return;
+        }
+        try {
+          const task = await tasksApi.create(listId, { title, priority, dueDate: isoDueDate, description: notes });
+          set((s) => ({ tasks: [...s.tasks, task] }));
+        } catch (err) {
+          // navigator.onLine is unreliable on some WebViews (observed: stays true
+          // even with radios fully off) — a raw fetch failure is a more trustworthy
+          // signal that the request never reached the server, so treat it the same
+          // as being offline rather than surfacing a dead-end error.
+          if (!(err instanceof ApiError)) {
+            queueOffline();
+            return;
+          }
+          throw err;
+        }
+      },
+      // Online-only sibling to addTask, for callers (e.g. hierarchical CSV
+      // import) that need the created task back and must keep going after a
+      // per-item failure rather than have the store show a toast and throw —
+      // deliberately doesn't touch addTask's offline-queue logic.
+      createTask: async (listId, input) => {
+        const task = await tasksApi.create(listId, input);
         set((s) => ({ tasks: [...s.tasks, task] }));
+        return task;
       },
       createTaskFromTemplate: async (templateId, listId) => {
         const task = await taskTemplatesApi.createTask(templateId, listId);
@@ -296,11 +397,36 @@ export const useStore = create<StoreState>()(
         const task = get().tasks.find((t) => t.id === id);
         if (!task) return;
         const nowDone = !task.done;
+        const queueOffline = () => {
+          const hunter = applyDoneXpDelta(get().hunter, task.priority, nowDone);
+          set((s) => ({
+            tasks: s.tasks.map((t) => (t.id === id ? { ...t, done: nowDone, updatedAt: new Date().toISOString() } : t)),
+            hunter,
+            pendingOps: appendOp(s.pendingOps, {
+              id: crypto.randomUUID(),
+              kind: 'toggleDone',
+              taskId: id,
+              done: nowDone,
+              createdAt: Date.now(),
+            }),
+          }));
+        };
+        if (!navigator.onLine) {
+          queueOffline();
+          return;
+        }
         try {
           const updated = await tasksApi.update(id, { done: nowDone });
           const hunter = applyDoneXpDelta(get().hunter, task.priority, nowDone);
           set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)), hunter }));
         } catch (err) {
+          // See addTask: a raw fetch failure means the request never reached the
+          // server, which is a more reliable "actually offline" signal than
+          // navigator.onLine on WebViews where it doesn't track real radio state.
+          if (!(err instanceof ApiError)) {
+            queueOffline();
+            return;
+          }
           toast.error(errorMessage(err, 'Could not update quest.'));
           throw err;
         }
@@ -326,10 +452,30 @@ export const useStore = create<StoreState>()(
       },
 
       updateTask: async (id, patch) => {
+        const queueOffline = () => {
+          set((s) => ({
+            tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)),
+            pendingOps: appendOp(s.pendingOps, {
+              id: crypto.randomUUID(),
+              kind: 'update',
+              taskId: id,
+              patch: patch as TaskUpdateInput,
+              createdAt: Date.now(),
+            }),
+          }));
+        };
+        if (!navigator.onLine) {
+          queueOffline();
+          return;
+        }
         try {
           const updated = await tasksApi.update(id, patch);
           set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)) }));
         } catch (err) {
+          if (!(err instanceof ApiError)) {
+            queueOffline();
+            return;
+          }
           toast.error(errorMessage(err, 'Could not update quest.'));
           throw err;
         }
@@ -345,10 +491,29 @@ export const useStore = create<StoreState>()(
         }
       },
       deleteTask: async (id) => {
+        const queueOffline = () => {
+          set((s) => ({
+            tasks: s.tasks.filter((t) => t.id !== id),
+            pendingOps: appendOp(s.pendingOps, {
+              id: crypto.randomUUID(),
+              kind: 'delete',
+              taskId: id,
+              createdAt: Date.now(),
+            }),
+          }));
+        };
+        if (!navigator.onLine) {
+          queueOffline();
+          return;
+        }
         try {
           await tasksApi.remove(id);
           set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) }));
         } catch (err) {
+          if (!(err instanceof ApiError)) {
+            queueOffline();
+            return;
+          }
           toast.error(errorMessage(err, 'Could not delete quest.'));
           throw err;
         }
@@ -420,10 +585,23 @@ export const useStore = create<StoreState>()(
     }),
     {
       name: 'solo-leveling-todo',
-      // only the client-only gamification layer and the last-active workspace choice are
-      // worth persisting locally; folders/projects/lists/tasks/workspaces are
-      // server-authoritative and reloaded via loadAll().
-      partialize: (s) => ({ hunter: s.hunter, currentWorkspaceId: s.currentWorkspaceId }),
+      // folders/projects/lists/tasks/workspaces are server-authoritative and normally
+      // just reloaded via loadAll() on boot — but they're cached here too so the
+      // mobile app has something to show on a cold start while offline. pendingOps and
+      // lastSyncSignature are the offline mutation queue and its reconciliation
+      // baseline (see offlineQueue.ts/reconcile.ts) and must survive an offline
+      // force-quit/reopen just as much as the data itself.
+      partialize: (s) => ({
+        hunter: s.hunter,
+        currentWorkspaceId: s.currentWorkspaceId,
+        folders: s.folders,
+        projects: s.projects,
+        lists: s.lists,
+        tasks: s.tasks,
+        workspaces: s.workspaces,
+        pendingOps: s.pendingOps,
+        lastSyncSignature: s.lastSyncSignature,
+      }),
     }
   )
 );

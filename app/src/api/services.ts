@@ -45,6 +45,7 @@ import type {
   ProjectMemberAccess,
   Tag,
   PaginatedTasks,
+  SyncStatus,
 } from '../types';
 
 // --- Workspaces ---
@@ -138,6 +139,7 @@ export const tasksApi = {
       `/tasks?includeDone=${includeDone}&archived=${archived}&page=${page}&pageSize=${pageSize}`
     );
   },
+  syncStatus: () => api.get<SyncStatus>('/tasks/sync-status?includeDone=true'),
   listForList: (listId: string) => api.get<Task[]>(`/tasks/by-list/${listId}`),
   listForProject: (projectId: string) => api.get<Task[]>(`/projects/${projectId}/tasks`),
   get: (id: string) => api.get<Task>(`/tasks/${id}`),

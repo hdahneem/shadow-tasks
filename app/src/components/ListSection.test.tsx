@@ -155,6 +155,28 @@ describe('ListSection task reordering', () => {
     expect(reorderTask).toHaveBeenCalledWith('t3', 0);
   });
 
+  it('blocks a reorder drop while offline instead of calling reorderTask', () => {
+    const reorderTask = vi.fn().mockResolvedValue(undefined);
+    useStore.setState({
+      reorderTask,
+      tasks: [
+        task({ id: 't1', title: 'Alpha', position: 1 }),
+        task({ id: 't2', title: 'Bravo', position: 2 }),
+      ],
+    });
+    Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+
+    renderWithRouter(<ListSection list={list()} />);
+
+    const alphaRow = screen.getByText('Alpha').closest('[draggable="true"]')!;
+    const bravoRow = screen.getByText('Bravo').closest('[draggable="true"]')!;
+    dragAndDrop(alphaRow, bravoRow);
+
+    expect(reorderTask).not.toHaveBeenCalled();
+
+    Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+  });
+
   it('does not make rows draggable when canEdit is false', () => {
     useStore.setState({ tasks: [task({ id: 't1', title: 'Alpha', position: 1 })] });
     renderWithRouter(<ListSection list={list()} canEdit={false} />);

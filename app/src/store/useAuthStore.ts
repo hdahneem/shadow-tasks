@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { api, tokenStore, ApiError } from '../api/client';
+import { api, tokenStore, userCache, ApiError } from '../api/client';
 
 export interface AuthUser {
   id: string;
@@ -49,6 +49,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
         { skipAuth: true }
       );
       tokenStore.set(res.accessToken, res.refreshToken);
+      userCache.set(res.user);
       set({ user: res.user, status: 'authenticated' });
     } catch (err) {
       set({ status: 'unauthenticated', error: describeAuthError(err) });
@@ -65,6 +66,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
         { skipAuth: true }
       );
       tokenStore.set(res.accessToken, res.refreshToken);
+      userCache.set(res.user);
       set({ user: res.user, status: 'authenticated' });
     } catch (err) {
       set({ status: 'unauthenticated', error: describeAuthError(err) });
@@ -75,6 +77,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
   logout: async () => {
     const refreshToken = tokenStore.refresh;
     tokenStore.clear();
+    userCache.clear();
     set({ user: null, status: 'unauthenticated' });
     if (refreshToken) {
       api.post('/auth/logout', { refreshToken }, { skipAuth: true }).catch(() => {});
@@ -89,15 +92,29 @@ export const useAuthStore = create<AuthState>()((set) => ({
     set({ status: 'loading' });
     try {
       const user = await api.get<AuthUser>('/auth/me');
+      userCache.set(user);
       set({ user, status: 'authenticated' });
-    } catch {
+    } catch (err) {
+      // A raw (non-ApiError) failure means the request never reached the server —
+      // most likely no connectivity — not that the token is actually invalid.
+      // Stay signed in against the last-known user so a cold start while offline
+      // can still render cached data instead of bouncing to the login screen.
+      if (!(err instanceof ApiError)) {
+        const cached = userCache.get<AuthUser>();
+        if (cached) {
+          set({ user: cached, status: 'authenticated' });
+          return;
+        }
+      }
       tokenStore.clear();
+      userCache.clear();
       set({ user: null, status: 'unauthenticated' });
     }
   },
 
   updateName: async (name) => {
     const user = await api.patch<AuthUser>('/auth/me', { name });
+    userCache.set(user);
     set({ user });
   },
 
@@ -116,6 +133,7 @@ export const useAuthStore = create<AuthState>()((set) => ({
   deleteAccount: async (password) => {
     await api.delete('/auth/me', { password });
     tokenStore.clear();
+    userCache.clear();
     set({ user: null, status: 'unauthenticated' });
   },
 
