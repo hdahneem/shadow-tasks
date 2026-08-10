@@ -20,9 +20,17 @@ vi.mock('../api/services', () => ({
 
 describe('xpForLevel', () => {
   it('increases with level', () => {
-    expect(xpForLevel(1)).toBe(100);
+    expect(xpForLevel(1)).toBe(90);
     expect(xpForLevel(2)).toBeGreaterThan(xpForLevel(1));
     expect(xpForLevel(10)).toBeGreaterThan(xpForLevel(5));
+  });
+
+  it('grows superlinearly, so each level costs progressively more than the last', () => {
+    const step10 = xpForLevel(10) - xpForLevel(9);
+    const step50 = xpForLevel(50) - xpForLevel(49);
+    const step99 = xpForLevel(99) - xpForLevel(98);
+    expect(step50).toBeGreaterThan(step10);
+    expect(step99).toBeGreaterThan(step50);
   });
 });
 
@@ -64,16 +72,16 @@ describe('toggleTask XP logic', () => {
 
     useStore.setState({
       tasks: [baseTask],
-      hunter: { level: 1, xp: 90, tasksCompleted: 0, highestLevel: 1 },
+      hunter: { level: 1, xp: 60, tasksCompleted: 0, highestLevel: 1 },
     });
 
     vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: true });
 
-    // high priority = 35 XP; 90 + 35 = 125, crosses the level-1 threshold (100) -> level 2, 25 XP remaining
+    // high priority = 35 XP; 60 + 35 = 95, crosses the level-1 threshold (90) -> level 2, 5 XP remaining
     await useStore.getState().toggleTask('t1');
 
     expect(useStore.getState().hunter.level).toBe(2);
-    expect(useStore.getState().hunter.xp).toBe(25);
+    expect(useStore.getState().hunter.xp).toBe(5);
     expect(useStore.getState().hunter.tasksCompleted).toBe(1);
     expect(useStore.getState().tasks[0].done).toBe(true);
 
@@ -82,10 +90,82 @@ describe('toggleTask XP logic', () => {
     await useStore.getState().toggleTask('t1');
 
     expect(useStore.getState().hunter.level).toBe(1);
-    expect(useStore.getState().hunter.xp).toBe(90);
+    expect(useStore.getState().hunter.xp).toBe(60);
     expect(useStore.getState().hunter.tasksCompleted).toBe(0);
     // reversing the level-up doesn't erase the peak once reached — badges earned stay earned
     expect(useStore.getState().hunter.highestLevel).toBe(2);
+  });
+
+  it('announces the XP gain and level-up, but stays silent on reversal', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+
+    const baseTask = {
+      id: 't1',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Grind the dungeon',
+      priority: 'high' as const,
+      done: false,
+      position: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: 0,
+    };
+    useStore.setState({
+      tasks: [baseTask],
+      hunter: { level: 1, xp: 60, tasksCompleted: 0, highestLevel: 1 },
+    });
+    useToastStore.setState({ toasts: [] });
+
+    vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: true });
+    await useStore.getState().toggleTask('t1');
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('success');
+    expect(toasts[0].message).toBe('+35 XP — Level Up! Now Level 2 (E-Rank)');
+
+    // un-completing reverses the XP but shouldn't announce anything
+    vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: false });
+    await useStore.getState().toggleTask('t1');
+
+    expect(useToastStore.getState().toasts).toHaveLength(1);
+  });
+
+  it('announces a badge unlock instead of a plain level-up when a badge threshold is crossed', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+
+    const baseTask = {
+      id: 't1',
+      listId: 'l1',
+      parentTaskId: null,
+      title: 'Clear the D-Rank gate',
+      priority: 'high' as const,
+      done: false,
+      position: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      progress: 0,
+    };
+    // one level short of D-Rank (level 10); 130 + 35(high) = 165, crosses the
+    // level-9 threshold (156) -> level 10 with 9 XP remaining, no further level-up
+    useStore.setState({
+      tasks: [baseTask],
+      hunter: { level: 9, xp: 130, tasksCompleted: 0, highestLevel: 9 },
+    });
+    useToastStore.setState({ toasts: [] });
+
+    vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: true });
+    await useStore.getState().toggleTask('t1');
+
+    expect(useStore.getState().hunter.level).toBe(10);
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toBe('+35 XP — Badge Unlocked: D-Rank Vanguard!');
   });
 
   it('never drops tasksCompleted below zero', async () => {

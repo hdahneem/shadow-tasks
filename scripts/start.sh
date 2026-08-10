@@ -7,6 +7,13 @@ ROOT="/Users/hdahneem/Desktop/Solo Leveling App"
 RUN_DIR="$ROOT/scripts/.run"
 mkdir -p "$RUN_DIR"
 
+# Double-clicking the .app in Finder launches this script via launchd, which
+# only provides a bare-bones PATH (/usr/bin:/bin:/usr/sbin:/sbin) - it does NOT
+# load ~/.zshrc or ~/.zprofile, so nvm-installed node/npm/npx are invisible.
+# Explicitly add the known node/homebrew locations before anything else runs.
+NVM_NODE_BIN=$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -n 1)
+export PATH="$NVM_NODE_BIN:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+
 BACKEND_PORT=4000
 FRONTEND_PORT=5555
 APP_URL="http://localhost:$FRONTEND_PORT"

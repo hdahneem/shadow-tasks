@@ -16,9 +16,15 @@ import {
 import { errorMessage, ApiError } from '../api/client';
 import { toast } from './useToastStore';
 import { appendOp, replayQueue, type PendingOp } from './offlineQueue';
+import { newlyUnlockedBadges } from '../lib/badges';
 
+// Superlinear curve (power > 1) so each level costs meaningfully more than the
+// last — early ranks (D/C) come within days of casual use, while S-Rank and the
+// prestige tier beyond it (Epic/Legendary/Mythic, see badges.ts) demand months
+// of sustained effort. Tuned so Mythic Monarch (level 100) stays a genuine
+// long-term achievement rather than either a quick grind or a practical wall.
 export function xpForLevel(level: number): number {
-  return Math.round(100 + (level - 1) * 55);
+  return Math.round(90 + 4 * Math.pow(level - 1, 1.35));
 }
 
 export function rankForLevel(level: number): Rank {
@@ -67,6 +73,28 @@ function applyDoneXpDelta(hunter: Hunter, priority: Priority, nowDone: boolean):
   // itself wouldn't feel like a reward.
   const highestLevel = Math.max(highestLevelOf(hunter), level);
   return { level, xp, tasksCompleted, highestLevel };
+}
+
+/**
+ * Surfaces XP gains to the player. Only fires on a positive delta (completing,
+ * not un-completing) — reversing a checkbox shouldn't announce a "gain". Badge
+ * unlocks take priority over a plain level-up, which takes priority over a
+ * plain XP toast, so a single completion never shows more than one summary.
+ */
+function notifyXpGain(before: Hunter, after: Hunter, xpDelta: number) {
+  if (xpDelta <= 0) return;
+  const unlocked = newlyUnlockedBadges(highestLevelOf(before), highestLevelOf(after));
+  if (unlocked.length > 0) {
+    for (const badge of unlocked) {
+      toast.success(`+${xpDelta} XP — Badge Unlocked: ${badge.name}!`);
+    }
+    return;
+  }
+  if (after.level > before.level) {
+    toast.success(`+${xpDelta} XP — Level Up! Now Level ${after.level} (${rankForLevel(after.level)}-Rank)`);
+    return;
+  }
+  toast.success(`+${xpDelta} XP`);
 }
 
 interface StoreState {
@@ -398,7 +426,8 @@ export const useStore = create<StoreState>()(
         if (!task) return;
         const nowDone = !task.done;
         const queueOffline = () => {
-          const hunter = applyDoneXpDelta(get().hunter, task.priority, nowDone);
+          const before = get().hunter;
+          const hunter = applyDoneXpDelta(before, task.priority, nowDone);
           set((s) => ({
             tasks: s.tasks.map((t) => (t.id === id ? { ...t, done: nowDone, updatedAt: new Date().toISOString() } : t)),
             hunter,
@@ -410,6 +439,7 @@ export const useStore = create<StoreState>()(
               createdAt: Date.now(),
             }),
           }));
+          notifyXpGain(before, hunter, PRIORITY_XP[task.priority] * (nowDone ? 1 : -1));
         };
         if (!navigator.onLine) {
           queueOffline();
@@ -417,8 +447,10 @@ export const useStore = create<StoreState>()(
         }
         try {
           const updated = await tasksApi.update(id, { done: nowDone });
-          const hunter = applyDoneXpDelta(get().hunter, task.priority, nowDone);
+          const before = get().hunter;
+          const hunter = applyDoneXpDelta(before, task.priority, nowDone);
           set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)), hunter }));
+          notifyXpGain(before, hunter, PRIORITY_XP[task.priority] * (nowDone ? 1 : -1));
         } catch (err) {
           // See addTask: a raw fetch failure means the request never reached the
           // server, which is a more reliable "actually offline" signal than
@@ -436,13 +468,15 @@ export const useStore = create<StoreState>()(
       // a task onto/off a "counts as done" status grants/reverses XP the same way
       // the checkbox does, keyed off the task's *previous* known done state.
       setTaskStatus: async (id, statusId) => {
-        const before = get().tasks.find((t) => t.id === id);
+        const beforeTask = get().tasks.find((t) => t.id === id);
         try {
           const updated = await tasksApi.setStatus(id, statusId);
           set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)) }));
-          if (before && before.done !== updated.done) {
-            const hunter = applyDoneXpDelta(get().hunter, before.priority, updated.done);
+          if (beforeTask && beforeTask.done !== updated.done) {
+            const beforeHunter = get().hunter;
+            const hunter = applyDoneXpDelta(beforeHunter, beforeTask.priority, updated.done);
             set({ hunter });
+            notifyXpGain(beforeHunter, hunter, PRIORITY_XP[beforeTask.priority] * (updated.done ? 1 : -1));
           }
           return updated;
         } catch (err) {
@@ -532,9 +566,12 @@ export const useStore = create<StoreState>()(
         try {
           const updated = await Promise.all(targets.map((t) => tasksApi.update(t.id, { done })));
           const byId = new Map(updated.map((u) => [u.id, u]));
-          let hunter = get().hunter;
+          const beforeHunter = get().hunter;
+          let hunter = beforeHunter;
           for (const t of targets) hunter = applyDoneXpDelta(hunter, t.priority, done);
           set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t), hunter }));
+          const xpDelta = targets.reduce((sum, t) => sum + PRIORITY_XP[t.priority] * (done ? 1 : -1), 0);
+          notifyXpGain(beforeHunter, hunter, xpDelta);
         } catch (err) {
           toast.error(errorMessage(err, 'Could not update quests.'));
           throw err;
