@@ -10,6 +10,8 @@ import { ImportCsvModal } from './ImportCsvModal';
 import { CommandPalette } from './CommandPalette';
 import { ShortcutsHelp } from './ShortcutsHelp';
 import { SettingsModal } from './SettingsModal';
+import { SyncStatusIndicator } from './SyncStatusIndicator';
+import { PullToRefresh } from './PullToRefresh';
 import { ModalActionsContext } from '../context/ModalActionsContext';
 import { GO_SHORTCUTS, isTypingTarget } from '../lib/shortcuts';
 
@@ -183,11 +185,16 @@ export function AppShell() {
             <h1 className="font-display font-bold tracking-[0.2em] text-xs text-glow-cyan uppercase">
               Shadow Tasks
             </h1>
+            <div className="ml-auto">
+              <SyncStatusIndicator />
+            </div>
           </header>
 
-          <main className="flex-1 p-4 md:p-8 overflow-y-auto">
-            <Outlet />
-          </main>
+          <PullToRefresh>
+            <div className="p-4 md:p-8">
+              <Outlet />
+            </div>
+          </PullToRefresh>
         </div>
 
         {creatingFolder && <CreateFolderModal onClose={() => setCreatingFolder(false)} />}

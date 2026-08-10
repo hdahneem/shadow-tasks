@@ -17,6 +17,16 @@ import { errorMessage, ApiError } from '../api/client';
 import { toast } from './useToastStore';
 import { appendOp, replayQueue, type PendingOp } from './offlineQueue';
 import { newlyUnlockedBadges } from '../lib/badges';
+import { decideReconciliation } from '../lib/reconcile';
+import { useAuthStore } from './useAuthStore';
+
+export type SyncState = 'idle' | 'syncing' | 'error';
+
+// Throttles background/automatic sync checks so reconnect/app-resume events
+// firing in quick succession don't spam the server — a manual trigger (pull-to-
+// refresh, the status indicator, initial mount) always bypasses this via force.
+const MIN_AUTO_SYNC_INTERVAL_MS = 60_000;
+let lastAutoSyncAt = 0;
 
 // Superlinear curve (power > 1) so each level costs meaningfully more than the
 // last — early ranks (D/C) come within days of casual use, while S-Rank and the
@@ -114,11 +124,22 @@ interface StoreState {
   // navigates to the real id. Deliberately not persisted; it's only meaningful for
   // whatever's mounted right now.
   lastResolvedTempId: { tempId: string; realId: string } | null;
+  // Drives the connection/sync status indicator. Transient — not persisted, since
+  // "syncing" or a stale error shouldn't survive a reload.
+  syncState: SyncState;
+  lastSyncedAt: number | null;
+  syncConflict: { localChangedAt: number; serverChangedAt: string | null } | null;
 
   loadAll: () => Promise<void>;
   replayPendingOps: () => Promise<void>;
   discardPendingOps: () => void;
   recordSyncSignature: (sig: SyncStatus) => void;
+  // The single entry point for reconciling with the server — used both by
+  // SyncManager's automatic triggers (reconnect, app-resume, mount) and by
+  // manual ones (pull-to-refresh, the status indicator's click-to-sync).
+  // `force` bypasses the background-check throttle; manual triggers always pass it.
+  triggerSync: (force?: boolean) => Promise<void>;
+  dismissSyncConflict: () => void;
   reset: () => void;
   setCurrentWorkspace: (id: string) => void;
   createWorkspace: (name: string) => Promise<string>;
@@ -180,6 +201,9 @@ export const useStore = create<StoreState>()(
       pendingOps: [],
       lastSyncSignature: null,
       lastResolvedTempId: null,
+      syncState: 'idle',
+      lastSyncedAt: null,
+      syncConflict: null,
 
       loadAll: async () => {
         if (get().loading) return;
@@ -203,8 +227,11 @@ export const useStore = create<StoreState>()(
         }
       },
 
-      // Reconciliation orchestration (when to call these) lives in SyncManager —
-      // these three are just the primitives it needs against store state.
+      // replayPendingOps/discardPendingOps/recordSyncSignature are the primitives;
+      // triggerSync below is the orchestration that decides when/how to use them.
+      // SyncManager calls triggerSync from its automatic triggers (reconnect,
+      // app-resume, mount); pull-to-refresh and the status indicator call it
+      // directly as a manual, always-forced trigger.
       replayPendingOps: async () => {
         const ops = get().pendingOps;
         if (ops.length === 0) return;
@@ -221,6 +248,35 @@ export const useStore = create<StoreState>()(
       discardPendingOps: () => set({ pendingOps: [] }),
       recordSyncSignature: (sig) => set({ lastSyncSignature: sig }),
 
+      triggerSync: async (force = false) => {
+        if (useAuthStore.getState().status !== 'authenticated' || !navigator.onLine) return;
+        const now = Date.now();
+        if (!force && now - lastAutoSyncAt < MIN_AUTO_SYNC_INTERVAL_MS) return;
+        lastAutoSyncAt = now;
+
+        set({ syncState: 'syncing' });
+        try {
+          const current = await tasksApi.syncStatus();
+          const decision = decideReconciliation(get().pendingOps, get().lastSyncSignature, current);
+          if (decision.kind === 'silent-refresh') {
+            await get().loadAll();
+            get().recordSyncSignature(current);
+          } else if (decision.kind === 'auto-replay') {
+            await get().replayPendingOps();
+            await get().loadAll();
+            get().recordSyncSignature(current);
+          } else {
+            set({ syncConflict: { localChangedAt: decision.localChangedAt, serverChangedAt: decision.serverChangedAt } });
+          }
+          set({ syncState: 'idle', lastSyncedAt: Date.now() });
+        } catch {
+          // syncState('error') is the only failure signal — SyncStatusIndicator
+          // surfaces it, so no caller here needs a rejected promise to handle too.
+          set({ syncState: 'error' });
+        }
+      },
+      dismissSyncConflict: () => set({ syncConflict: null }),
+
       reset: () =>
         set({
           folders: [],
@@ -233,6 +289,9 @@ export const useStore = create<StoreState>()(
           pendingOps: [],
           lastSyncSignature: null,
           lastResolvedTempId: null,
+          syncState: 'idle',
+          lastSyncedAt: null,
+          syncConflict: null,
         }),
 
       setCurrentWorkspace: (id) => set({ currentWorkspaceId: id }),

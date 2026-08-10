@@ -15,7 +15,9 @@ vi.mock('../api/services', () => ({
     remove: vi.fn(),
     setStatus: vi.fn(),
     reorder: vi.fn(),
+    syncStatus: vi.fn(),
   },
+  workspacesApi: { list: vi.fn() },
 }));
 
 describe('xpForLevel', () => {
@@ -633,5 +635,106 @@ describe('offline mutations', () => {
     expect(useStore.getState().pendingOps).toHaveLength(0);
     expect(useStore.getState().tasks.find((t) => t.id === 'real-2')).toBeTruthy();
     expect(useStore.getState().tasks.find((t) => t.id === 'temp-1')).toBeUndefined();
+  });
+});
+
+describe('triggerSync', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+  });
+
+  it('does nothing when not authenticated', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useAuthStore } = await import('./useAuthStore');
+    useAuthStore.setState({ status: 'unauthenticated' });
+
+    await useStore.getState().triggerSync(true);
+
+    expect(tasksApi.syncStatus).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while offline', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useAuthStore } = await import('./useAuthStore');
+    useAuthStore.setState({ status: 'authenticated' });
+    Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+
+    await useStore.getState().triggerSync(true);
+
+    expect(tasksApi.syncStatus).not.toHaveBeenCalled();
+  });
+
+  it('never rejects, and marks syncState as error, when the sync-status check fails', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useAuthStore } = await import('./useAuthStore');
+    useAuthStore.setState({ status: 'authenticated' });
+    vi.mocked(tasksApi.syncStatus).mockRejectedValue(new Error('offline'));
+
+    await expect(useStore.getState().triggerSync(true)).resolves.toBeUndefined();
+
+    expect(useStore.getState().syncState).toBe('error');
+  });
+
+  it('sets syncState to idle and records when it finished, on a clean silent-refresh', async () => {
+    const { tasksApi, foldersApi, projectsApi, listsApi, workspacesApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useAuthStore } = await import('./useAuthStore');
+    useAuthStore.setState({ status: 'authenticated' });
+    useStore.setState({ pendingOps: [], lastSyncSignature: null });
+    vi.mocked(tasksApi.syncStatus).mockResolvedValue({ lastModifiedAt: '2026-08-10T00:00:00.000Z', count: 1 });
+    vi.mocked(foldersApi.list).mockResolvedValue([]);
+    vi.mocked(projectsApi.list).mockResolvedValue([]);
+    vi.mocked(listsApi.listAll).mockResolvedValue([]);
+    vi.mocked(workspacesApi.list).mockResolvedValue([]);
+    vi.mocked(tasksApi.listAll).mockResolvedValue([]);
+
+    await useStore.getState().triggerSync(true);
+
+    expect(useStore.getState().syncState).toBe('idle');
+    expect(useStore.getState().lastSyncedAt).not.toBeNull();
+    expect(useStore.getState().lastSyncSignature).toEqual({ lastModifiedAt: '2026-08-10T00:00:00.000Z', count: 1 });
+  });
+
+  it('throttles unforced calls, but a forced call always goes through', async () => {
+    const { tasksApi, foldersApi, projectsApi, listsApi, workspacesApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useAuthStore } = await import('./useAuthStore');
+    useAuthStore.setState({ status: 'authenticated' });
+    useStore.setState({ pendingOps: [], lastSyncSignature: null });
+    // vi.mock's factory only runs once per file, so these mocks (and their call
+    // history) persist across tests/resetModules — clear the count explicitly
+    // rather than relying on toHaveBeenCalledWith like the other tests here do.
+    vi.mocked(tasksApi.syncStatus).mockClear();
+    vi.mocked(tasksApi.syncStatus).mockResolvedValue({ lastModifiedAt: null, count: 0 });
+    vi.mocked(foldersApi.list).mockResolvedValue([]);
+    vi.mocked(projectsApi.list).mockResolvedValue([]);
+    vi.mocked(listsApi.listAll).mockResolvedValue([]);
+    vi.mocked(workspacesApi.list).mockResolvedValue([]);
+    vi.mocked(tasksApi.listAll).mockResolvedValue([]);
+
+    await useStore.getState().triggerSync(true);
+    expect(tasksApi.syncStatus).toHaveBeenCalledTimes(1);
+
+    await useStore.getState().triggerSync(); // unforced, well within the throttle window
+    expect(tasksApi.syncStatus).toHaveBeenCalledTimes(1);
+
+    await useStore.getState().triggerSync(true); // forced bypasses the throttle
+    expect(tasksApi.syncStatus).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('dismissSyncConflict', () => {
+  it('clears the conflict without touching anything else', async () => {
+    const { useStore } = await import('./useStore');
+    useStore.setState({ syncConflict: { localChangedAt: 1, serverChangedAt: null }, syncState: 'idle' });
+
+    useStore.getState().dismissSyncConflict();
+
+    expect(useStore.getState().syncConflict).toBeNull();
+    expect(useStore.getState().syncState).toBe('idle');
   });
 });

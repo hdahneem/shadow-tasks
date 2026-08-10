@@ -25,7 +25,15 @@ describe('SyncManager', () => {
     vi.clearAllMocks();
     setOnline(true);
     useAuthStore.setState({ status: 'unauthenticated', user: null });
-    useStore.setState({ pendingOps: [], lastSyncSignature: null, tasks: [], loaded: true, loading: false });
+    useStore.setState({
+      pendingOps: [],
+      lastSyncSignature: null,
+      tasks: [],
+      loaded: true,
+      loading: false,
+      syncState: 'idle',
+      syncConflict: null,
+    });
     vi.mocked(foldersApi.list).mockResolvedValue([]);
     vi.mocked(projectsApi.list).mockResolvedValue([]);
     vi.mocked(listsApi.listAll).mockResolvedValue([]);
@@ -51,14 +59,14 @@ describe('SyncManager', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('shows the offline indicator with a pending-change count while offline', () => {
-    setOnline(false);
+  it('renders nothing when authenticated with nothing to reconcile', async () => {
+    vi.mocked(tasksApi.syncStatus).mockResolvedValue({ lastModifiedAt: null, count: 0 });
     useAuthStore.setState({ status: 'authenticated', user: { id: 'u1', email: 'a@b.com', name: 'A' } });
-    useStore.setState({ pendingOps: [pendingOp] });
 
-    render(<SyncManager />);
+    const { container } = render(<SyncManager />);
 
-    expect(screen.getByText('Offline — 1 change pending')).toBeInTheDocument();
+    await waitFor(() => expect(tasksApi.syncStatus).toHaveBeenCalled());
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('does nothing beyond a silent refresh when there are no pending ops', async () => {
@@ -69,10 +77,12 @@ describe('SyncManager', () => {
 
     await waitFor(() => expect(tasksApi.syncStatus).toHaveBeenCalled());
     expect(screen.queryByText('Sync Conflict')).not.toBeInTheDocument();
-    await waitFor(() => expect(useStore.getState().lastSyncSignature).toEqual({
-      lastModifiedAt: '2026-08-07T00:00:00.000Z',
-      count: 2,
-    }));
+    await waitFor(() =>
+      expect(useStore.getState().lastSyncSignature).toEqual({
+        lastModifiedAt: '2026-08-07T00:00:00.000Z',
+        count: 2,
+      })
+    );
   });
 
   it('shows the conflict modal when pending ops exist and the server signature has moved', async () => {
@@ -100,5 +110,14 @@ describe('SyncManager', () => {
 
     await waitFor(() => expect(useStore.getState().pendingOps).toHaveLength(0));
     expect(screen.queryByText('Sync Conflict')).not.toBeInTheDocument();
+  });
+
+  it('marks the sync as failed (surfaced by SyncStatusIndicator) when the reconciliation check fails', async () => {
+    vi.mocked(tasksApi.syncStatus).mockRejectedValue(new Error('network down'));
+    useAuthStore.setState({ status: 'authenticated', user: { id: 'u1', email: 'a@b.com', name: 'A' } });
+
+    render(<SyncManager />);
+
+    await waitFor(() => expect(useStore.getState().syncState).toBe('error'));
   });
 });

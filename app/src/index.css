@@ -234,6 +234,14 @@ body {
   animation: flicker-in 0.35s ease-out both;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .animate-glow-pulse { animation: none; }
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 1.2s ease-in-out infinite;
+}
+
 .text-glow-cyan {
   color: var(--color-cyan-bright);
   text-shadow: var(--glow-cyan-shadow);
