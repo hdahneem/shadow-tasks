@@ -268,3 +268,48 @@ describe('TaskDetail attachments', () => {
     );
   });
 });
+
+describe('TaskDetail offline fallback', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ user: { id: 'u1', email: 'sung@example.com', name: 'Sung Jin-Woo' } });
+  });
+
+  it('falls back to the cached task when the network request fails outright (offline)', async () => {
+    useStore.setState({
+      refreshTasks: vi.fn().mockResolvedValue(undefined),
+      lists: [],
+      tasks: [baseTask({ title: 'Cached offline quest' })],
+    });
+    // A raw fetch failure — no response reached the server — is the same signal
+    // used elsewhere (see useStore's toggleTask) to mean "we're offline", as
+    // opposed to an ApiError carrying a real server response.
+    vi.mocked(tasksApi.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderTaskDetail();
+
+    expect(await screen.findByText('Cached offline quest')).toBeInTheDocument();
+    expect(screen.queryByText("This quest doesn't exist or was deleted.")).not.toBeInTheDocument();
+  });
+
+  it("shows the not-found state when offline and the task was never cached locally", async () => {
+    useStore.setState({ refreshTasks: vi.fn().mockResolvedValue(undefined), lists: [], tasks: [] });
+    vi.mocked(tasksApi.get).mockRejectedValue(new TypeError('Failed to fetch'));
+
+    renderTaskDetail();
+
+    expect(await screen.findByText("This quest doesn't exist or was deleted.")).toBeInTheDocument();
+  });
+
+  it('still shows not-found for a genuine 404 from the server (not an offline failure)', async () => {
+    useStore.setState({
+      refreshTasks: vi.fn().mockResolvedValue(undefined),
+      lists: [],
+      tasks: [baseTask({ title: 'A different cached quest' })],
+    });
+    vi.mocked(tasksApi.get).mockRejectedValue(new ApiError(404, 'Not found'));
+
+    renderTaskDetail();
+
+    expect(await screen.findByText("This quest doesn't exist or was deleted.")).toBeInTheDocument();
+  });
+});

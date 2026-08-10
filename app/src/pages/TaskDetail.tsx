@@ -73,7 +73,20 @@ export function TaskDetail() {
       setTask(fresh);
       setNotFound(false);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) setNotFound(true);
+      // A raw fetch failure (not an ApiError) means the request never reached the
+      // server — the same "actually offline" signal used elsewhere (see toggleTask
+      // in useStore.ts). Fall back to whatever's already cached in the store
+      // instead of reporting a false "doesn't exist" — the cache may be a lighter
+      // list-view copy missing comments/activity/etc., but that's still far better
+      // than losing the task entirely while offline.
+      if (!(err instanceof ApiError)) {
+        const cached = useStore.getState().tasks.find((t) => t.id === taskId);
+        setTask(cached ?? null);
+        setNotFound(!cached);
+        setLoading(false);
+        return;
+      }
+      if (err.status === 404) setNotFound(true);
       else throw err;
     } finally {
       setLoading(false);
@@ -97,12 +110,14 @@ export function TaskDetail() {
 
   useEffect(() => {
     if (!task?.projectId) return;
-    statusesApi.listForProject(task.projectId).then(setStatuses);
+    // Best-effort — a cached task can render fine offline without its status
+    // list or member list refreshing, so a failure here shouldn't be noisy.
+    statusesApi.listForProject(task.projectId).then(setStatuses).catch(() => {});
   }, [task?.projectId]);
 
   useEffect(() => {
     if (!task?.workspaceId) return;
-    workspacesApi.members(task.workspaceId).then(setWorkspaceMembers);
+    workspacesApi.members(task.workspaceId).then(setWorkspaceMembers).catch(() => {});
   }, [task?.workspaceId]);
 
   const mentionCandidates = workspaceMembers.map((m) => ({ id: m.user.id, name: m.user.name }));
