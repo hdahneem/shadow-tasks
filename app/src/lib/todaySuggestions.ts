@@ -23,24 +23,27 @@ export function startsToday(task: Task, today = todayKey()): boolean {
 }
 
 /**
- * Tasks that belong in Today's Tasks without going through the suggestion
- * tray at all: anything with a startDate of today (automatic, per spec) plus
- * anything the user explicitly added. A 'dismissed' entry always wins over
- * both, so a startDate-today task can still be removed from view if the user
- * doesn't want it there.
+ * Whether a single task belongs in Today's Tasks right now: anything with a
+ * startDate of today (automatic, per spec) or an explicit 'added' entry. A
+ * 'dismissed' entry always wins over both, so a startDate-today task can
+ * still be removed from view if the user doesn't want it there. Shared by
+ * selectTodayTasks (the full list) and any single-task "is this in today?"
+ * check, e.g. the toggle button on a task's detail page.
  */
+export function isInTodayList(task: Task, entries: Record<string, TodayEntryStatus>, today = todayKey()): boolean {
+  if (!isEligible(task)) return false;
+  const status = entries[task.id];
+  if (status === 'dismissed') return false;
+  if (status === 'added') return true;
+  return startsToday(task, today);
+}
+
 export function selectTodayTasks(
   tasks: Task[],
   entries: Record<string, TodayEntryStatus>,
   today = todayKey()
 ): Task[] {
-  return tasks.filter((task) => {
-    if (!isEligible(task)) return false;
-    const status = entries[task.id];
-    if (status === 'dismissed') return false;
-    if (status === 'added') return true;
-    return startsToday(task, today);
-  });
+  return tasks.filter((task) => isInTodayList(task, entries, today));
 }
 
 /**

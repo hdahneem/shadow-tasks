@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectTodayTasks, computeTodaySuggestions, startsToday } from './todaySuggestions';
+import { selectTodayTasks, computeTodaySuggestions, startsToday, isInTodayList } from './todaySuggestions';
 import type { Task, TodayEntryStatus } from '../types';
 
 const TODAY = '2026-08-12';
@@ -33,6 +33,35 @@ describe('startsToday', () => {
   });
   it('is false for a task starting a different day', () => {
     expect(startsToday(baseTask({ startDate: '2026-08-13T00:00:00.000Z' }), TODAY)).toBe(false);
+  });
+});
+
+describe('isInTodayList', () => {
+  it('is true for a task with a startDate of today, with no entry', () => {
+    const task = baseTask({ id: 'a', startDate: `${TODAY}T00:00:00.000Z` });
+    expect(isInTodayList(task, entries([]), TODAY)).toBe(true);
+  });
+
+  it('is true for a manually-added task', () => {
+    const task = baseTask({ id: 'b', dueDate: '2026-09-01T00:00:00.000Z' });
+    expect(isInTodayList(task, entries([['b', 'added']]), TODAY)).toBe(true);
+  });
+
+  it('is false for a task with neither a startDate-today nor an entry', () => {
+    const task = baseTask({ id: 'c' });
+    expect(isInTodayList(task, entries([]), TODAY)).toBe(false);
+  });
+
+  it('a dismissed entry overrides automatic startDate-today inclusion', () => {
+    const task = baseTask({ id: 'd', startDate: `${TODAY}T00:00:00.000Z` });
+    expect(isInTodayList(task, entries([['d', 'dismissed']]), TODAY)).toBe(false);
+  });
+
+  it('is false for a done or archived task even with an "added" entry', () => {
+    const done = baseTask({ id: 'e', done: true });
+    const archived = baseTask({ id: 'f', archivedAt: '2026-08-01T00:00:00.000Z' });
+    expect(isInTodayList(done, entries([['e', 'added']]), TODAY)).toBe(false);
+    expect(isInTodayList(archived, entries([['f', 'added']]), TODAY)).toBe(false);
   });
 });
 

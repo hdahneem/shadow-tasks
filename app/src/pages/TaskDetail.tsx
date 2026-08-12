@@ -20,6 +20,8 @@ import { useAuthStore } from '../store/useAuthStore';
 import { ApiError, errorMessage, resolveAssetUrl } from '../api/client';
 import { toast } from '../store/useToastStore';
 import { describeActivity as describeActivitySentence } from '../lib/activityDescriptions';
+import { isInTodayList } from '../lib/todaySuggestions';
+import { useIsOnline } from '../lib/useIsOnline';
 import type { Task, Priority, Status, WorkspaceMember } from '../types';
 
 const PRIORITIES: Priority[] = ['low', 'medium', 'high'];
@@ -39,7 +41,10 @@ export function TaskDetail() {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
   const lists = useStore((s) => s.lists);
+  const todayEntries = useStore((s) => s.todayEntries);
+  const setTodayEntry = useStore((s) => s.setTodayEntry);
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const online = useIsOnline();
 
   const [task, setTask] = useState<Task | null>(null);
   const [statuses, setStatuses] = useState<Status[]>([]);
@@ -54,6 +59,7 @@ export function TaskDetail() {
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [completionError, setCompletionError] = useState<string | null>(null);
   const [workspaceMembers, setWorkspaceMembers] = useState<WorkspaceMember[]>([]);
+  const [todayBusy, setTodayBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
@@ -202,6 +208,21 @@ export function TaskDetail() {
     useStore.getState().refreshTasks().catch(() => {});
   };
 
+  // Lets the user pin/unpin this exact task to Today's Tasks without leaving
+  // the detail page — same setTodayEntry the Today's Tasks page itself uses,
+  // so it stays consistent regardless of which list the task belongs to.
+  const handleToggleToday = async () => {
+    if (!task) return;
+    setTodayBusy(true);
+    try {
+      await setTodayEntry(task.id, inToday ? 'dismissed' : 'added');
+    } catch {
+      // setTodayEntry already surfaces an error toast
+    } finally {
+      setTodayBusy(false);
+    }
+  };
+
   const handleMove = async (listId: string) => {
     if (!task || !listId || listId === task.listId) return;
     await tasksApi.move(task.id, listId);
@@ -279,6 +300,8 @@ export function TaskDetail() {
 
   const sameProjectLists = lists.filter((l) => l.projectId === task.projectId);
   const isArchived = !!task.archivedAt;
+  const inToday = isInTodayList(task, todayEntries);
+  const canToggleToday = !task.done && !isArchived && !task.id.startsWith('temp-');
 
   return (
     <div className="max-w-3xl mx-auto animate-flicker-in flex flex-col gap-6">
@@ -359,6 +382,16 @@ export function TaskDetail() {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap shrink-0">
+            {canToggleToday && (
+              <button
+                onClick={handleToggleToday}
+                disabled={!online || todayBusy}
+                title={!online ? "You're offline — this needs a connection." : undefined}
+                className={`hud-btn text-xs px-3 py-1.5 cursor-pointer disabled:cursor-default disabled:opacity-50 ${inToday ? 'text-cyan-bright border-cyan/40' : ''}`}
+              >
+                {todayBusy ? '…' : inToday ? '✓ Remove from Today' : '+ Add to Today'}
+              </button>
+            )}
             <button onClick={handleDuplicate} className="hud-btn text-xs px-3 py-1.5 cursor-pointer">
               Duplicate
             </button>

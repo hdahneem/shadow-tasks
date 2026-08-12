@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { TaskDetail } from './TaskDetail';
 import { useStore } from '../store/useStore';
 import { useAuthStore } from '../store/useAuthStore';
-import { tasksApi, commentsApi } from '../api/services';
+import { tasksApi, commentsApi, todayApi } from '../api/services';
 import { ApiError } from '../api/client';
 import type { Attachment, Comment, Task } from '../types';
 
@@ -35,6 +35,7 @@ vi.mock('../api/services', () => ({
   recurrenceApi: { create: vi.fn(), stop: vi.fn() },
   attachmentsApi: { remove: vi.fn() },
   taskTemplatesApi: { saveFromTask: vi.fn() },
+  todayApi: { list: vi.fn(), setStatus: vi.fn() },
 }));
 
 function comment(overrides: Partial<Comment> = {}): Comment {
@@ -311,5 +312,77 @@ describe('TaskDetail offline fallback', () => {
     renderTaskDetail();
 
     expect(await screen.findByText("This quest doesn't exist or was deleted.")).toBeInTheDocument();
+  });
+});
+
+describe('TaskDetail today toggle', () => {
+  beforeEach(() => {
+    useStore.setState({ refreshTasks: vi.fn().mockResolvedValue(undefined), lists: [], todayEntries: {} });
+    useAuthStore.setState({ user: { id: 'u1', email: 'sung@example.com', name: 'Sung Jin-Woo' } });
+  });
+
+  it('shows "Add to Today" for a task not currently on the list', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({}));
+    renderTaskDetail();
+    expect(await screen.findByText('+ Add to Today')).toBeInTheDocument();
+  });
+
+  it('adding pins the task and flips the button to "Remove from Today"', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({}));
+    vi.mocked(todayApi.setStatus).mockResolvedValue({ taskId: 't1', status: 'added' });
+    renderTaskDetail();
+
+    fireEvent.click(await screen.findByText('+ Add to Today'));
+
+    expect(await screen.findByText('✓ Remove from Today')).toBeInTheDocument();
+    expect(todayApi.setStatus).toHaveBeenCalledWith('t1', 'added');
+    expect(useStore.getState().todayEntries.t1).toBe('added');
+  });
+
+  it('shows "Remove from Today" (not "Add") for a task auto-included via a startDate of today', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({ startDate: `${today}T00:00:00.000Z` }));
+    renderTaskDetail();
+    expect(await screen.findByText('✓ Remove from Today')).toBeInTheDocument();
+  });
+
+  it('removing dismisses the task and flips the button back to "Add to Today"', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({}));
+    useStore.setState({ todayEntries: { t1: 'added' } });
+    vi.mocked(todayApi.setStatus).mockResolvedValue({ taskId: 't1', status: 'dismissed' });
+    renderTaskDetail();
+
+    fireEvent.click(await screen.findByText('✓ Remove from Today'));
+
+    expect(await screen.findByText('+ Add to Today')).toBeInTheDocument();
+    expect(todayApi.setStatus).toHaveBeenCalledWith('t1', 'dismissed');
+  });
+
+  it('does not show the toggle for a completed task', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({ done: true }));
+    renderTaskDetail();
+    await screen.findByText(baseTask({}).title);
+    expect(screen.queryByText('+ Add to Today')).not.toBeInTheDocument();
+    expect(screen.queryByText('✓ Remove from Today')).not.toBeInTheDocument();
+  });
+
+  it('does not show the toggle for an archived task', async () => {
+    vi.mocked(tasksApi.get).mockResolvedValue(baseTask({ archivedAt: '2026-08-01T00:00:00.000Z' }));
+    renderTaskDetail();
+    await screen.findByText('This quest has been archived.');
+    expect(screen.queryByText('+ Add to Today')).not.toBeInTheDocument();
+  });
+
+  it('does not show the toggle for an offline-created (unsynced) task', async () => {
+    useStore.setState({ tasks: [baseTask({ id: 'temp-1', title: 'Unsynced quest' })] });
+    render(
+      <MemoryRouter initialEntries={['/tasks/temp-1']}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetail />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    expect(await screen.findByText('Unsynced quest')).toBeInTheDocument();
+    expect(screen.queryByText('+ Add to Today')).not.toBeInTheDocument();
   });
 });
