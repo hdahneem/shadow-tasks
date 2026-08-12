@@ -9,10 +9,10 @@ vi.mock('../native', () => nativeMock);
 describe('ConnectionTypeIndicator', () => {
   beforeEach(() => {
     nativeMock.isNative = true;
-    useConnectionStore.setState({ connectionType: 'unknown', candidateCount: 2 });
+    useConnectionStore.setState({ connectionType: 'usb', candidateCount: 2 });
   });
 
-  it('renders nothing on non-native builds even with multiple candidates', () => {
+  it('renders nothing on non-native builds even while connected via USB', () => {
     nativeMock.isNative = false;
     const { container } = render(<ConnectionTypeIndicator />);
     expect(container).toBeEmptyDOMElement();
@@ -24,14 +24,19 @@ describe('ConnectionTypeIndicator', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('shows Wi-Fi when the last successful request went over the primary candidate', () => {
+  it('renders nothing while connected over Wi-Fi', () => {
     useConnectionStore.setState({ connectionType: 'wifi' });
-    render(<ConnectionTypeIndicator />);
-    expect(screen.getByLabelText('Connection type: Wi-Fi')).toBeInTheDocument();
+    const { container } = render(<ConnectionTypeIndicator />);
+    expect(container).toBeEmptyDOMElement();
   });
 
-  it('shows USB when the last successful request went over the USB fallback', () => {
-    useConnectionStore.setState({ connectionType: 'usb' });
+  it('renders nothing while the connection type is not yet known', () => {
+    useConnectionStore.setState({ connectionType: 'unknown' });
+    const { container } = render(<ConnectionTypeIndicator />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('shows the USB indicator only once the request actually went over the USB fallback', () => {
     render(<ConnectionTypeIndicator />);
     expect(screen.getByLabelText('Connection type: USB')).toBeInTheDocument();
   });
