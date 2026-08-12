@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Folder, Project, TodoList, Task, Rank, Priority, Workspace, SyncStatus } from '../types';
+import type { Folder, Project, TodoList, Task, Rank, Priority, Workspace, SyncStatus, TodayEntryStatus } from '../types';
 import { PRIORITY_XP } from '../types';
 import {
   foldersApi,
@@ -11,6 +11,7 @@ import {
   taskTemplatesApi,
   workspacesApi,
   taskTagsApi,
+  todayApi,
   type TaskUpdateInput,
 } from '../api/services';
 import { errorMessage, ApiError } from '../api/client';
@@ -129,8 +130,13 @@ interface StoreState {
   syncState: SyncState;
   lastSyncedAt: number | null;
   syncConflict: { localChangedAt: number; serverChangedAt: string | null } | null;
+  // Per-user, resets daily on the server (see backend TodayListEntry) — keyed by
+  // taskId for O(1) lookups from lib/todaySuggestions.ts and TaskRow-adjacent UI.
+  todayEntries: Record<string, TodayEntryStatus>;
 
   loadAll: () => Promise<void>;
+  loadTodayEntries: () => Promise<void>;
+  setTodayEntry: (taskId: string, status: TodayEntryStatus) => Promise<void>;
   replayPendingOps: () => Promise<void>;
   discardPendingOps: () => void;
   recordSyncSignature: (sig: SyncStatus) => void;
@@ -204,25 +210,56 @@ export const useStore = create<StoreState>()(
       syncState: 'idle',
       lastSyncedAt: null,
       syncConflict: null,
+      todayEntries: {},
 
       loadAll: async () => {
         if (get().loading) return;
         set({ loading: true });
         try {
-          const [folders, projects, lists, tasks, workspaces] = await Promise.all([
+          const [folders, projects, lists, tasks, workspaces, today] = await Promise.all([
             foldersApi.list(),
             projectsApi.list(),
             listsApi.listAll(),
             tasksApi.listAll(true),
             workspacesApi.list(),
+            todayApi.list(),
           ]);
           const persistedId = get().currentWorkspaceId;
           const currentWorkspaceId = workspaces.some((w) => w.id === persistedId)
             ? persistedId
             : (workspaces[0]?.id ?? null);
-          set({ folders, projects, lists, tasks, workspaces, currentWorkspaceId, loaded: true, loading: false });
+          const todayEntries = Object.fromEntries(today.entries.map((e) => [e.taskId, e.status]));
+          set({ folders, projects, lists, tasks, workspaces, currentWorkspaceId, todayEntries, loaded: true, loading: false });
         } catch (err) {
           set({ loading: false });
+          throw err;
+        }
+      },
+
+      loadTodayEntries: async () => {
+        const { entries } = await todayApi.list();
+        set({ todayEntries: Object.fromEntries(entries.map((e) => [e.taskId, e.status])) });
+      },
+
+      // Optimistic-then-revert like updateTask, but intentionally does not
+      // participate in the offline mutation queue (see offlineQueue.ts) — this
+      // is a personal, low-stakes preference rather than task content, so the
+      // UI gates the add/accept/dismiss controls behind useIsOnline() instead
+      // (same pattern as other out-of-scope-for-offline actions) rather than
+      // extending the queue/reconciliation system for it.
+      setTodayEntry: async (taskId, status) => {
+        const previous = get().todayEntries[taskId];
+        set((s) => ({ todayEntries: { ...s.todayEntries, [taskId]: status } }));
+        try {
+          await todayApi.setStatus(taskId, status);
+        } catch (err) {
+          set((s) => {
+            const next = { ...s.todayEntries };
+            if (previous) next[taskId] = previous;
+            else delete next[taskId];
+            return { todayEntries: next };
+          });
+          toast.error(errorMessage(err, 'Could not update your Today list.'));
           throw err;
         }
       },
@@ -292,6 +329,7 @@ export const useStore = create<StoreState>()(
           syncState: 'idle',
           lastSyncedAt: null,
           syncConflict: null,
+          todayEntries: {},
         }),
 
       setCurrentWorkspace: (id) => set({ currentWorkspaceId: id }),
@@ -697,6 +735,7 @@ export const useStore = create<StoreState>()(
         workspaces: s.workspaces,
         pendingOps: s.pendingOps,
         lastSyncSignature: s.lastSyncSignature,
+        todayEntries: s.todayEntries,
       }),
     }
   )

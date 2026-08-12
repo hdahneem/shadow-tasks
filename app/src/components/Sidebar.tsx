@@ -101,6 +101,9 @@ export function Sidebar({
             <button className={navBtn(isActive('/'))} onClick={() => go('/')}>
               <NavLabel icon="⌂">Status Window</NavLabel>
             </button>
+            <button className={navBtn(isActive('/today'))} onClick={() => go('/today')}>
+              <NavLabel icon="☉">Today</NavLabel>
+            </button>
             <button className={navBtn(isActive('/all'))} onClick={() => go('/all')}>
               <NavLabel icon="◆">All Quests</NavLabel>
             </button>

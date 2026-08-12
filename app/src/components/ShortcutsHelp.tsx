@@ -3,6 +3,7 @@ import { Modal } from './Modal';
 const SHORTCUTS: { keys: string; description: string }[] = [
   { keys: '⌘K / Ctrl+K', description: 'Open the command palette' },
   { keys: 'G then H', description: 'Go to Status Window' },
+  { keys: 'G then T', description: "Go to Today's Tasks" },
   { keys: 'G then A', description: 'Go to All Quests' },
   { keys: 'G then C', description: 'Go to Calendar' },
   { keys: 'G then S', description: 'Go to Search' },

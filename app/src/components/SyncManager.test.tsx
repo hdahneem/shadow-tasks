@@ -3,7 +3,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import { SyncManager } from './SyncManager';
 import { useAuthStore } from '../store/useAuthStore';
 import { useStore } from '../store/useStore';
-import { tasksApi, foldersApi, projectsApi, listsApi, workspacesApi } from '../api/services';
+import { tasksApi, foldersApi, projectsApi, listsApi, workspacesApi, todayApi } from '../api/services';
 import type { PendingOp } from '../store/offlineQueue';
 
 vi.mock('../api/services', () => ({
@@ -12,6 +12,7 @@ vi.mock('../api/services', () => ({
   projectsApi: { list: vi.fn() },
   listsApi: { listAll: vi.fn() },
   workspacesApi: { list: vi.fn() },
+  todayApi: { list: vi.fn(), setStatus: vi.fn() },
 }));
 
 const nativeMock = vi.hoisted(() => ({ isNative: false }));
@@ -43,6 +44,7 @@ describe('SyncManager', () => {
     vi.mocked(listsApi.listAll).mockResolvedValue([]);
     vi.mocked(workspacesApi.list).mockResolvedValue([]);
     vi.mocked(tasksApi.listAll).mockResolvedValue([]);
+    vi.mocked(todayApi.list).mockResolvedValue({ date: '2026-08-12', entries: [] });
     vi.mocked(tasksApi.update).mockResolvedValue({
       id: 't1',
       listId: 'l1',

@@ -23,6 +23,7 @@ import { docsRouter } from './routes/docs.routes.js';
 import { publicRouter } from './routes/public.routes.js';
 import { automationsRouter } from './routes/automations.routes.js';
 import { tagsRouter } from './routes/tags.routes.js';
+import { todayRouter } from './routes/today.routes.js';
 
 export function createApp() {
   const app = express();
@@ -60,6 +61,7 @@ export function createApp() {
   app.use('/api/v1/public', publicRouter);
   app.use('/api/v1/automations', automationsRouter);
   app.use('/api/v1/tags', tagsRouter);
+  app.use('/api/v1/today', todayRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: `No route for ${req.method} ${req.path}` });

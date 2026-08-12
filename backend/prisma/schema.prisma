@@ -84,6 +84,11 @@ enum AutomationActionType {
   add_tag
 }
 
+enum TodayEntryStatus {
+  added
+  dismissed
+}
+
 model User {
   id                      String                   @id @default(uuid())
   email                   String                   @unique
@@ -109,6 +114,7 @@ model User {
   notificationsCaused     Notification[]           @relation("NotificationActor")
   notificationPreferences NotificationPreference[]
   docs                    Doc[]
+  todayListEntries        TodayListEntry[]
 }
 
 model Workspace {
@@ -426,10 +432,11 @@ model Task {
   recurrenceRuleId String?
   recurrenceRule   RecurrenceRule? @relation(fields: [recurrenceRuleId], references: [id], onDelete: SetNull)
 
-  assignees     TaskAssignee[]
-  taskTags      TaskTag[]
-  timeEntries   TimeEntry[]
-  notifications Notification[]
+  assignees        TaskAssignee[]
+  taskTags         TaskTag[]
+  timeEntries      TimeEntry[]
+  notifications    Notification[]
+  todayListEntries TodayListEntry[]
 
   dueSoonNotifiedAt DateTime?
 
@@ -465,6 +472,26 @@ model NotificationPreference {
   type   NotificationType
 
   @@unique([userId, type])
+}
+
+// "Today" is keyed by a UTC date string ('YYYY-MM-DD', matching the frontend's
+// lib/calendar.ts todayKey()) rather than a DateTime, so entries naturally scope
+// to a single day without any cleanup job. status='added' means the user chose
+// to include this task in today's list even though it doesn't otherwise qualify
+// (e.g. no startDate of today); status='dismissed' means the user does not want
+// to see it today, overriding both suggestion and automatic startDate inclusion.
+model TodayListEntry {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  taskId    String
+  task      Task             @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  date      String
+  status    TodayEntryStatus
+  createdAt DateTime         @default(now())
+
+  @@unique([userId, taskId, date])
+  @@index([userId, date])
 }
 
 model TimeEntry {

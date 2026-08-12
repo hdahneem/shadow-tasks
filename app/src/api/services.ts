@@ -46,6 +46,8 @@ import type {
   Tag,
   PaginatedTasks,
   SyncStatus,
+  TodayEntry,
+  TodayEntryStatus,
 } from '../types';
 
 // --- Workspaces ---
@@ -208,6 +210,13 @@ export const tagsApi = {
 export const taskTagsApi = {
   add: (taskId: string, tagId: string) => api.post<Tag>(`/tasks/${taskId}/tags`, { tagId }),
   remove: (taskId: string, tagId: string) => api.delete<void>(`/tasks/${taskId}/tags/${tagId}`),
+};
+
+// --- Today's Tasks (per-user, resets daily — see backend TodayListEntry) ---
+export const todayApi = {
+  list: () => api.get<{ date: string; entries: TodayEntry[] }>('/today/entries'),
+  setStatus: (taskId: string, status: TodayEntryStatus) =>
+    api.post<TodayEntry>('/today/entries', { taskId, status }),
 };
 
 export interface TimeEntryLogInput {

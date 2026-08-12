@@ -6,17 +6,20 @@ import { RankBadge } from '../components/RankBadge';
 import { ProjectCard } from '../components/ProjectCard';
 import { BadgeTile } from '../components/BadgeTile';
 import { BADGES, isBadgeEarned } from '../lib/badges';
+import { selectTodayTasks } from '../lib/todaySuggestions';
 
 export function Dashboard() {
   const navigate = useNavigate();
   const hunter = useStore((s) => s.hunter);
   const tasks = useStore((s) => s.tasks);
+  const todayEntries = useStore((s) => s.todayEntries);
   const projects = useStore((s) => s.projects);
   const rank = rankForLevel(hunter.level);
   const need = xpForLevel(hunter.level);
   const highestLevel = highestLevelOf(hunter);
 
   const activeCount = tasks.filter((t) => !t.done).length;
+  const todayCount = selectTodayTasks(tasks, todayEntries).length;
   const doneToday = tasks.filter(
     (t) => t.done && t.completedAt && new Date(t.completedAt).toDateString() === new Date().toDateString()
   ).length;
@@ -48,6 +51,7 @@ export function Dashboard() {
 
           <div className="flex flex-col gap-3 justify-center font-body text-sm">
             <StatRow label="Title" value="Todo Hunter" />
+            <StatRow label="Today's Tasks" value={String(todayCount)} onClick={() => navigate('/today')} />
             <StatRow label="Active Quests" value={String(activeCount)} />
             <StatRow label="Cleared Today" value={String(doneToday)} />
             <StatRow label="Total Cleared" value={String(hunter.tasksCompleted)} />
@@ -105,11 +109,15 @@ export function Dashboard() {
   );
 }
 
-function StatRow({ label, value }: { label: string; value: string }) {
+function StatRow({ label, value, onClick }: { label: string; value: string; onClick?: () => void }) {
+  const Wrapper = onClick ? 'button' : 'div';
   return (
-    <div className="flex justify-between border-b border-cyan-dim/15 pb-2">
+    <Wrapper
+      onClick={onClick}
+      className={`flex justify-between w-full border-b border-cyan-dim/15 pb-2 ${onClick ? 'cursor-pointer hover:border-cyan-dim/40 transition-colors' : ''}`}
+    >
       <span className="text-mist uppercase tracking-wider text-xs">{label}</span>
       <span className="text-cyan-bright font-semibold">{value}</span>
-    </div>
+    </Wrapper>
   );
 }

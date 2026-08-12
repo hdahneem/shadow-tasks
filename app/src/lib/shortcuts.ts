@@ -21,6 +21,7 @@ export function filterCommands(commands: Command[], query: string): Command[] {
 
 export const GO_SHORTCUTS: Record<string, string> = {
   h: '/',
+  t: '/today',
   a: '/all',
   c: '/calendar',
   s: '/search',

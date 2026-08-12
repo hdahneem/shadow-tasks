@@ -18,6 +18,7 @@ vi.mock('../api/services', () => ({
     syncStatus: vi.fn(),
   },
   workspacesApi: { list: vi.fn() },
+  todayApi: { list: vi.fn(), setStatus: vi.fn() },
 }));
 
 describe('xpForLevel', () => {
@@ -468,6 +469,85 @@ describe('createTask', () => {
   });
 });
 
+describe('loadTodayEntries', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('fetches today\'s entries and keys them by taskId', async () => {
+    const { todayApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    vi.mocked(todayApi.list).mockResolvedValue({
+      date: '2026-08-12',
+      entries: [
+        { taskId: 'a', status: 'added' },
+        { taskId: 'b', status: 'dismissed' },
+      ],
+    });
+
+    await useStore.getState().loadTodayEntries();
+
+    expect(useStore.getState().todayEntries).toEqual({ a: 'added', b: 'dismissed' });
+  });
+});
+
+describe('setTodayEntry', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('optimistically records the entry, then persists it via the API', async () => {
+    const { todayApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ todayEntries: {} });
+    vi.mocked(todayApi.setStatus).mockResolvedValue({ taskId: 't1', status: 'added' });
+
+    await useStore.getState().setTodayEntry('t1', 'added');
+
+    expect(todayApi.setStatus).toHaveBeenCalledWith('t1', 'added');
+    expect(useStore.getState().todayEntries).toEqual({ t1: 'added' });
+  });
+
+  it('overwrites a prior entry for the same task (e.g. accepting a suggestion then dismissing it)', async () => {
+    const { todayApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ todayEntries: { t1: 'added' } });
+    vi.mocked(todayApi.setStatus).mockResolvedValue({ taskId: 't1', status: 'dismissed' });
+
+    await useStore.getState().setTodayEntry('t1', 'dismissed');
+
+    expect(useStore.getState().todayEntries).toEqual({ t1: 'dismissed' });
+  });
+
+  it('reverts the optimistic update and surfaces a toast when the request fails', async () => {
+    const { todayApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+    useStore.setState({ todayEntries: { t1: 'added' } });
+    vi.mocked(todayApi.setStatus).mockRejectedValue(new Error('network down'));
+
+    await expect(useStore.getState().setTodayEntry('t1', 'dismissed')).rejects.toThrow('network down');
+
+    expect(useStore.getState().todayEntries).toEqual({ t1: 'added' });
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].type).toBe('error');
+  });
+
+  it('reverts to no entry at all (not a stale value) when there was nothing to roll back to', async () => {
+    const { todayApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ todayEntries: {} });
+    vi.mocked(todayApi.setStatus).mockRejectedValue(new Error('network down'));
+
+    await expect(useStore.getState().setTodayEntry('t1', 'added')).rejects.toThrow();
+
+    expect(useStore.getState().todayEntries).toEqual({});
+  });
+});
+
 describe('offline mutations', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -691,6 +771,8 @@ describe('triggerSync', () => {
     vi.mocked(listsApi.listAll).mockResolvedValue([]);
     vi.mocked(workspacesApi.list).mockResolvedValue([]);
     vi.mocked(tasksApi.listAll).mockResolvedValue([]);
+    const { todayApi } = await import('../api/services');
+    vi.mocked(todayApi.list).mockResolvedValue({ date: '2026-08-10', entries: [] });
 
     await useStore.getState().triggerSync(true);
 
@@ -715,6 +797,8 @@ describe('triggerSync', () => {
     vi.mocked(listsApi.listAll).mockResolvedValue([]);
     vi.mocked(workspacesApi.list).mockResolvedValue([]);
     vi.mocked(tasksApi.listAll).mockResolvedValue([]);
+    const { todayApi } = await import('../api/services');
+    vi.mocked(todayApi.list).mockResolvedValue({ date: '2026-08-10', entries: [] });
 
     await useStore.getState().triggerSync(true);
     expect(tasksApi.syncStatus).toHaveBeenCalledTimes(1);

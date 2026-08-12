@@ -36,6 +36,7 @@ export function CommandPalette({
     };
     return [
       { id: 'go-home', label: 'Go to Status Window', group: 'Pages', keywords: 'home dashboard', run: go('/') },
+      { id: 'go-today', label: "Go to Today's Tasks", group: 'Pages', keywords: 'daily plan suggestions', run: go('/today') },
       { id: 'go-all', label: 'Go to All Quests', group: 'Pages', keywords: 'tasks list', run: go('/all') },
       { id: 'go-calendar', label: 'Go to Calendar', group: 'Pages', keywords: 'schedule', run: go('/calendar') },
       { id: 'go-search', label: 'Go to Search', group: 'Pages', keywords: 'find', run: go('/search') },

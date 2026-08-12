@@ -32,6 +32,7 @@ const ActivityFeedView = lazy(() =>
 const WorkloadView = lazy(() => import('./pages/WorkloadView').then((m) => ({ default: m.WorkloadView })));
 const BadgesView = lazy(() => import('./pages/BadgesView').then((m) => ({ default: m.BadgesView })));
 const TimelineView = lazy(() => import('./pages/TimelineView').then((m) => ({ default: m.TimelineView })));
+const TodayView = lazy(() => import('./pages/TodayView').then((m) => ({ default: m.TodayView })));
 
 function PageLoader() {
   return (
@@ -98,6 +99,7 @@ function App() {
 
           <Route element={<AppShell />}>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/today" element={<TodayView />} />
             <Route path="/all" element={<AllQuestsView />} />
             <Route path="/calendar" element={<CalendarView />} />
             <Route path="/search" element={<SearchView />} />

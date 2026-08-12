@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import type { Task } from '../types';
@@ -18,12 +19,17 @@ export function TaskRow({
   selectable = false,
   selected = false,
   onToggleSelect,
+  trailingAction,
 }: {
   task: Task;
   subtitle?: string;
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
+  // Overrides the default "delete task" button — used by views (e.g. Today's
+  // Tasks) where the row-level trailing action shouldn't be destructive to
+  // the underlying task, just to that view's relationship with it.
+  trailingAction?: ReactNode;
 }) {
   const toggleTask = useStore((s) => s.toggleTask);
   const deleteTask = useStore((s) => s.deleteTask);
@@ -115,13 +121,15 @@ export function TaskRow({
         </span>
       )}
 
-      <button
-        onClick={() => deleteTask(task.id).catch(() => {})}
-        className="opacity-0 group-hover:opacity-100 text-mist-dim hover:text-danger text-xs px-1 cursor-pointer shrink-0"
-        title="Delete task"
-      >
-        ✕
-      </button>
+      {trailingAction ?? (
+        <button
+          onClick={() => deleteTask(task.id).catch(() => {})}
+          className="opacity-0 group-hover:opacity-100 text-mist-dim hover:text-danger text-xs px-1 cursor-pointer shrink-0"
+          title="Delete task"
+        >
+          ✕
+        </button>
+      )}
     </div>
   );
 }

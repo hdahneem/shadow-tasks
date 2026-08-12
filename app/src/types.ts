@@ -307,6 +307,13 @@ export interface Tag {
   createdAt: string;
 }
 
+export type TodayEntryStatus = 'added' | 'dismissed';
+
+export interface TodayEntry {
+  taskId: string;
+  status: TodayEntryStatus;
+}
+
 export type NotificationType = 'assigned' | 'comment_added' | 'mentioned' | 'due_soon';
 
 export interface AppNotification {
