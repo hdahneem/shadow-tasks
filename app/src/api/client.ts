@@ -1,11 +1,52 @@
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000/api/v1';
+import { useConnectionStore } from '../store/useConnectionStore';
+import { buildCandidates, orderCandidates } from '../lib/connectionCandidates';
+
+const RETRY_COOLDOWN_MS = 10_000;
+const CANDIDATE_TIMEOUT_MS = 5_000;
+const DEFAULT_URL = 'http://localhost:4000/api/v1';
+
+// Wi-Fi is the primary candidate; USB is set only for native mobile builds —
+// an `adb reverse tcp:4000 tcp:4000` tunnel (see scripts/start.sh) makes the
+// phone's own localhost:4000 reach this same backend over the USB cable,
+// independent of Wi-Fi entirely. On desktop dev both resolve to the same
+// origin, so buildCandidates collapses them to a single candidate.
+const candidates = buildCandidates([
+  { url: import.meta.env.VITE_API_URL ?? DEFAULT_URL, type: 'wifi' },
+  { url: import.meta.env.VITE_API_URL_USB ?? DEFAULT_URL, type: 'usb' },
+]);
+useConnectionStore.getState().setCandidateCount(candidates.length);
+
+function orderedCandidates() {
+  return orderCandidates(candidates, Date.now(), RETRY_COOLDOWN_MS);
+}
+
+async function fetchWithFallback(path: string, init: RequestInit): Promise<Response> {
+  let lastErr: unknown;
+  for (const candidate of orderedCandidates()) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), CANDIDATE_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${candidate.url}${path}`, { ...init, signal: controller.signal });
+      candidate.lastFailedAt = null;
+      useConnectionStore.getState().setConnectionType(candidate.type);
+      return res;
+    } catch (err) {
+      candidate.lastFailedAt = Date.now();
+      lastErr = err;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+  throw lastErr;
+}
 
 /** Uploaded files (attachments, cover images) are served from the API origin, not
- * under /api/v1 — resolve their server-relative URLs against that origin so they
- * load correctly regardless of which origin the frontend itself is served from. */
+ * under /api/v1 — resolve their server-relative URLs against whichever candidate's
+ * origin last worked, so they load correctly over Wi-Fi or the USB fallback alike. */
 export function resolveAssetUrl(url: string): string {
   if (/^https?:\/\//i.test(url)) return url;
-  return `${new URL(API_URL).origin}${url}`;
+  const active = orderedCandidates()[0];
+  return `${active.origin}${url}`;
 }
 
 const ACCESS_KEY = 'shadow-tasks:access-token';
@@ -72,7 +113,7 @@ async function refreshAccessToken(): Promise<string | null> {
   if (!refreshToken) return null;
 
   if (!refreshPromise) {
-    refreshPromise = fetch(`${API_URL}/auth/refresh`, {
+    refreshPromise = fetchWithFallback('/auth/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken }),
@@ -106,7 +147,7 @@ async function request<T>(path: string, options: RequestOptions = {}, isRetry = 
     headers.Authorization = `Bearer ${tokenStore.access}`;
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithFallback(path, {
     method: options.method ?? 'GET',
     headers,
     body: options.isForm ? (options.body as FormData) : options.body ? JSON.stringify(options.body) : undefined,
@@ -143,5 +184,3 @@ export const api = {
   upload: <T>(path: string, formData: FormData) =>
     request<T>(path, { method: 'POST', body: formData, isForm: true }),
 };
-
-export { API_URL };

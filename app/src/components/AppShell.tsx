@@ -11,6 +11,7 @@ import { CommandPalette } from './CommandPalette';
 import { ShortcutsHelp } from './ShortcutsHelp';
 import { SettingsModal } from './SettingsModal';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
+import { ConnectionTypeIndicator } from './ConnectionTypeIndicator';
 import { PullToRefresh } from './PullToRefresh';
 import { ModalActionsContext } from '../context/ModalActionsContext';
 import { GO_SHORTCUTS, isTypingTarget } from '../lib/shortcuts';
@@ -185,7 +186,8 @@ export function AppShell() {
             <h1 className="font-display font-bold tracking-[0.2em] text-xs text-glow-cyan uppercase">
               Shadow Tasks
             </h1>
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-1.5">
+              <ConnectionTypeIndicator />
               <SyncStatusIndicator />
             </div>
           </header>

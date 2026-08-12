@@ -8,6 +8,7 @@ import { Panel } from './Panel';
 import { ThemeToggle } from './ThemeToggle';
 import { NotificationBell } from './NotificationBell';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
+import { ConnectionTypeIndicator } from './ConnectionTypeIndicator';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 export function Sidebar({
@@ -82,6 +83,7 @@ export function Sidebar({
             </h1>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <ConnectionTypeIndicator />
             <SyncStatusIndicator />
             <NotificationBell />
             <ThemeToggle />

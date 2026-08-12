@@ -72,6 +72,18 @@ else
   echo "Starting frontend (pid $!)..."
 fi
 
+# --- USB sync tunnel ---
+# For every phone connected over USB with debugging enabled, tunnel its own
+# localhost:4000 to this Mac's localhost:4000, so the mobile app can reach the
+# backend over the cable when Wi-Fi/LAN isn't available. No-ops quietly if adb
+# isn't installed or no device is attached - this is a nice-to-have, not
+# something that should block the rest of startup.
+if command -v adb >/dev/null 2>&1; then
+  for device in $(adb devices | awk 'NR>1 && $2=="device" {print $1}'); do
+    adb -s "$device" reverse "tcp:$BACKEND_PORT" "tcp:$BACKEND_PORT" >/dev/null 2>&1
+  done
+fi
+
 notify "Starting up..."
 
 if wait_for_port "$FRONTEND_PORT"; then

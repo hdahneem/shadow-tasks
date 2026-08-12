@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { resolveAssetUrl, errorMessage, ApiError } from './client';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { resolveAssetUrl, errorMessage, ApiError, api } from './client';
+import { useConnectionStore } from '../store/useConnectionStore';
 
 describe('resolveAssetUrl', () => {
   it('resolves a server-relative upload path against the API origin', () => {
@@ -36,5 +37,20 @@ describe('errorMessage', () => {
   it('uses the default fallback text when none is given', () => {
     Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
     expect(errorMessage(new Error('boom'))).toBe('Something went wrong. Please try again.');
+  });
+});
+
+describe('connection reporting', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('records which backend candidate a successful request went through', async () => {
+    // VITE_API_URL / VITE_API_URL_USB are unset in the test env, so both
+    // default to the same localhost origin and collapse into one 'wifi'
+    // candidate (see connectionCandidates.test.ts for the dedup logic itself).
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    await api.get('/health', { skipAuth: true });
+    expect(useConnectionStore.getState().connectionType).toBe('wifi');
   });
 });
