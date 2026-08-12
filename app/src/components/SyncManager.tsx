@@ -54,6 +54,24 @@ export function SyncManager() {
     if (authenticated) useStore.getState().triggerSync(true);
   }, [authenticated]);
 
+  useEffect(() => {
+    // Capacitor WebViews don't reliably fire browser 'online'/'offline' events
+    // on network changes (Wi-Fi dropping, a USB cable being plugged in, etc.),
+    // so a failed sync could otherwise sit in the "Sync Failed" state
+    // indefinitely until the user manually retries or backgrounds/foregrounds
+    // the app. Retry on a short interval instead, so recovery — e.g. once the
+    // USB fallback in api/client.ts becomes reachable — happens within
+    // seconds rather than requiring the user to notice and act.
+    if (!authenticated || !isNative) return;
+    const RETRY_ON_ERROR_INTERVAL_MS = 5000;
+    const interval = setInterval(() => {
+      if (useStore.getState().syncState === 'error') {
+        useStore.getState().triggerSync(true);
+      }
+    }, RETRY_ON_ERROR_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [authenticated]);
+
   const resolveConflict = async (direction: 'phone' | 'desktop') => {
     setBusy(true);
     try {

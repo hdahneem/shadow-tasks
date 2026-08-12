@@ -72,16 +72,34 @@ else
   echo "Starting frontend (pid $!)..."
 fi
 
-# --- USB sync tunnel ---
-# For every phone connected over USB with debugging enabled, tunnel its own
-# localhost:4000 to this Mac's localhost:4000, so the mobile app can reach the
-# backend over the cable when Wi-Fi/LAN isn't available. No-ops quietly if adb
-# isn't installed or no device is attached - this is a nice-to-have, not
-# something that should block the rest of startup.
+# --- USB sync tunnel (self-healing) ---
+# adb reverse only lasts for the CURRENT usb debug session - unplugging and
+# replugging the cable (or the phone sleeping/unlocking) starts a new one and
+# silently drops the tunnel, even though the cable still looks "connected."
+# A one-shot call here would only fix it for whatever session happens to be
+# active at launch, so instead run a background watcher that keeps reapplying
+# it for any connected device that doesn't have it yet - so it self-heals
+# without the user ever having to restart anything. No-ops quietly if adb
+# isn't installed - this is a nice-to-have, not something that should block
+# the rest of startup.
 if command -v adb >/dev/null 2>&1; then
-  for device in $(adb devices | awk 'NR>1 && $2=="device" {print $1}'); do
-    adb -s "$device" reverse "tcp:$BACKEND_PORT" "tcp:$BACKEND_PORT" >/dev/null 2>&1
-  done
+  ADB_WATCH_PID_FILE="$RUN_DIR/adb-reverse-watch.pid"
+  if [ -f "$ADB_WATCH_PID_FILE" ] && kill -0 "$(cat "$ADB_WATCH_PID_FILE")" 2>/dev/null; then
+    echo "USB tunnel watcher already running (pid $(cat "$ADB_WATCH_PID_FILE"))"
+  else
+    (
+      while true; do
+        for device in $(adb devices | awk 'NR>1 && $2=="device" {print $1}'); do
+          if ! adb -s "$device" reverse --list 2>/dev/null | grep -q "tcp:$BACKEND_PORT tcp:$BACKEND_PORT"; then
+            adb -s "$device" reverse "tcp:$BACKEND_PORT" "tcp:$BACKEND_PORT" >/dev/null 2>&1
+          fi
+        done
+        sleep 3
+      done
+    ) &
+    echo $! > "$ADB_WATCH_PID_FILE"
+    echo "Starting USB tunnel watcher (pid $!)..."
+  fi
 fi
 
 notify "Starting up..."

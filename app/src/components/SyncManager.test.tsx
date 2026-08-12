@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import { SyncManager } from './SyncManager';
 import { useAuthStore } from '../store/useAuthStore';
 import { useStore } from '../store/useStore';
@@ -14,6 +14,9 @@ vi.mock('../api/services', () => ({
   workspacesApi: { list: vi.fn() },
 }));
 
+const nativeMock = vi.hoisted(() => ({ isNative: false }));
+vi.mock('../native', () => nativeMock);
+
 function setOnline(value: boolean) {
   Object.defineProperty(navigator, 'onLine', { value, configurable: true });
 }
@@ -24,6 +27,7 @@ describe('SyncManager', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setOnline(true);
+    nativeMock.isNative = false;
     useAuthStore.setState({ status: 'unauthenticated', user: null });
     useStore.setState({
       pendingOps: [],
@@ -119,5 +123,79 @@ describe('SyncManager', () => {
     render(<SyncManager />);
 
     await waitFor(() => expect(useStore.getState().syncState).toBe('error'));
+  });
+
+  describe('automatic retry after a sync failure (native only)', () => {
+    beforeEach(() => {
+      nativeMock.isNative = true;
+    });
+
+    afterEach(() => {
+      nativeMock.isNative = false;
+      vi.useRealTimers();
+    });
+
+    it('retries a few seconds later without requiring the user to act, and recovers once reachable again', async () => {
+      // Mirrors the real scenario: the phone reconnects over USB but the host's
+      // adb-reverse tunnel isn't up yet, so the first sync fails; once it comes
+      // up, the app should notice on its own rather than sit in "Sync Failed."
+      vi.useFakeTimers();
+      vi.mocked(tasksApi.syncStatus)
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValue({ lastModifiedAt: null, count: 0 });
+      useAuthStore.setState({ status: 'authenticated', user: { id: 'u1', email: 'a@b.com', name: 'A' } });
+
+      render(<SyncManager />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(useStore.getState().syncState).toBe('error');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(useStore.getState().syncState).toBe('idle');
+      expect(tasksApi.syncStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not poll on a timer once the connection is healthy', async () => {
+      vi.useFakeTimers();
+      vi.mocked(tasksApi.syncStatus).mockResolvedValue({ lastModifiedAt: null, count: 0 });
+      useAuthStore.setState({ status: 'authenticated', user: { id: 'u1', email: 'a@b.com', name: 'A' } });
+
+      render(<SyncManager />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(useStore.getState().syncState).toBe('idle');
+      const callsSoFar = vi.mocked(tasksApi.syncStatus).mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(tasksApi.syncStatus).toHaveBeenCalledTimes(callsSoFar);
+    });
+
+    it('does not retry on a timer on non-native builds (web already has reliable online/offline events)', async () => {
+      nativeMock.isNative = false;
+      vi.useFakeTimers();
+      vi.mocked(tasksApi.syncStatus).mockRejectedValue(new Error('network down'));
+      useAuthStore.setState({ status: 'authenticated', user: { id: 'u1', email: 'a@b.com', name: 'A' } });
+
+      render(<SyncManager />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(useStore.getState().syncState).toBe('error');
+      const callsSoFar = vi.mocked(tasksApi.syncStatus).mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      expect(tasksApi.syncStatus).toHaveBeenCalledTimes(callsSoFar);
+    });
   });
 });
