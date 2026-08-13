@@ -4,8 +4,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { AllQuestsView } from './AllQuestsView';
 import { useStore } from '../store/useStore';
 import { useAuthStore } from '../store/useAuthStore';
-import { tasksApi, tagsApi, taskTagsApi } from '../api/services';
-import type { PaginatedTasks, Tag, Task } from '../types';
+import { tasksApi, tagsApi, taskTagsApi, assigneesApi, relationsApi, statusesApi, workspacesApi } from '../api/services';
+import type { PaginatedTasks, Project, Tag, Task, TodoList } from '../types';
 
 vi.mock('../api/services', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/services')>();
@@ -18,9 +18,17 @@ vi.mock('../api/services', async (importOriginal) => {
       update: vi.fn(),
       archive: vi.fn(),
       remove: vi.fn(),
+      move: vi.fn(),
+      duplicate: vi.fn(),
+      setStatus: vi.fn(),
+      reorder: vi.fn(),
     },
     tagsApi: { ...actual.tagsApi, list: vi.fn() },
     taskTagsApi: { ...actual.taskTagsApi, add: vi.fn() },
+    assigneesApi: { ...actual.assigneesApi, add: vi.fn() },
+    relationsApi: { ...actual.relationsApi, create: vi.fn() },
+    statusesApi: { ...actual.statusesApi, listForProject: vi.fn() },
+    workspacesApi: { ...actual.workspacesApi, members: vi.fn() },
   };
 });
 
@@ -43,6 +51,23 @@ function task(overrides: Partial<Task>): Task {
 
 function page(tasks: Task[], total = tasks.length, pageNum = 1): PaginatedTasks {
   return { tasks, total, page: pageNum, pageSize: 25 };
+}
+
+function project(overrides: Partial<Project>): Project {
+  return {
+    id: overrides.id ?? 'p1',
+    workspaceId: overrides.workspaceId ?? 'w1',
+    folderId: null,
+    name: 'Project',
+    rank: 'E',
+    createdAt: '',
+    effectiveRole: 'member',
+    ...overrides,
+  };
+}
+
+function list(overrides: Partial<TodoList>): TodoList {
+  return { id: overrides.id ?? 'l1', projectId: overrides.projectId ?? 'p1', name: 'List', createdAt: '', ...overrides };
 }
 
 describe('AllQuestsView', () => {
@@ -231,9 +256,10 @@ describe('AllQuestsView', () => {
     await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
   });
 
-  it('bulk-archives selected quests and removes them from the list', async () => {
+  it('bulk-archives selected quests after confirmation and removes them from the list', async () => {
     vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page([task({ id: 't1', title: 'Quest one' })]));
     vi.mocked(tasksApi.archive).mockResolvedValue(task({ id: 't1', archivedAt: new Date().toISOString() }));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(
       <MemoryRouter>
         <AllQuestsView />
@@ -247,6 +273,24 @@ describe('AllQuestsView', () => {
 
     await waitFor(() => expect(tasksApi.archive).toHaveBeenCalledWith('t1'));
     await waitFor(() => expect(screen.queryByText('Quest one')).not.toBeInTheDocument());
+  });
+
+  it('does not bulk-archive when confirmation is cancelled', async () => {
+    vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page([task({ id: 't1', title: 'Quest one' })]));
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    render(
+      <MemoryRouter>
+        <AllQuestsView />
+      </MemoryRouter>
+    );
+    await screen.findByText('Quest one');
+
+    fireEvent.click(screen.getByText('Select'));
+    fireEvent.click(screen.getByLabelText('Select Quest one'));
+    fireEvent.click(screen.getByText('Archive'));
+
+    expect(tasksApi.archive).not.toHaveBeenCalled();
+    expect(screen.getByText('Quest one')).toBeInTheDocument();
   });
 
   it('bulk-deletes selected quests after confirmation', async () => {
@@ -392,6 +436,164 @@ describe('AllQuestsView', () => {
 
       await waitFor(() => expect(taskTagsApi.add).toHaveBeenCalledWith('t2', 'tag1'));
       expect(taskTagsApi.add).not.toHaveBeenCalledWith('t1', 'tag1');
+    });
+  });
+
+  describe('bulk actions v2', () => {
+    beforeEach(() => {
+      vi.mocked(workspacesApi.members).mockResolvedValue([]);
+      vi.mocked(statusesApi.listForProject).mockResolvedValue([]);
+    });
+
+    it('disables Assign a Hunter and Change Status when selected quests span multiple projects/workspaces', async () => {
+      const rows = [
+        task({ id: 't1', title: 'Quest one', list: { id: 'l1', name: 'List A', project: { id: 'p1', name: 'Project A' } } }),
+        task({ id: 't2', title: 'Quest two', list: { id: 'l2', name: 'List B', project: { id: 'p2', name: 'Project B' } } }),
+      ];
+      useStore.setState({
+        tasks: rows,
+        projects: [project({ id: 'p1', workspaceId: 'w1' }), project({ id: 'p2', workspaceId: 'w2' })],
+      });
+      vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page(rows));
+      render(
+        <MemoryRouter>
+          <AllQuestsView />
+        </MemoryRouter>
+      );
+      await screen.findByText('Quest one');
+
+      fireEvent.click(screen.getByText('Select'));
+      fireEvent.click(screen.getByLabelText('Select Quest one'));
+      fireEvent.click(screen.getByLabelText('Select Quest two'));
+      fireEvent.click(screen.getByText('Actions ▾'));
+
+      expect(screen.getByText('Assign a Hunter')).toBeDisabled();
+      expect(screen.getByText('Change Status')).toBeDisabled();
+    });
+
+    it('duplicates selected quests and refreshes the list', async () => {
+      const rows = [task({ id: 't1', title: 'Quest one' })];
+      useStore.setState({ tasks: rows });
+      vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page(rows));
+      vi.mocked(tasksApi.duplicate).mockResolvedValue(task({ id: 't1-copy', title: 'Quest one (copy)' }));
+      render(
+        <MemoryRouter>
+          <AllQuestsView />
+        </MemoryRouter>
+      );
+      await screen.findByText('Quest one');
+
+      fireEvent.click(screen.getByText('Select'));
+      fireEvent.click(screen.getByLabelText('Select Quest one'));
+      fireEvent.click(screen.getByText('Actions ▾'));
+      fireEvent.click(screen.getByText('Duplicate'));
+
+      await waitFor(() => expect(tasksApi.duplicate).toHaveBeenCalledWith('t1'));
+      await waitFor(() => expect(tasksApi.listAllPaged).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+    });
+
+    it('moves selected quests to a chosen list via the picker modal', async () => {
+      const rows = [task({ id: 't1', title: 'Quest one' })];
+      useStore.setState({
+        tasks: rows,
+        projects: [project({ id: 'p1', name: 'Project A' })],
+        lists: [list({ id: 'l1', projectId: 'p1', name: 'List A' }), list({ id: 'l2', projectId: 'p1', name: 'List B' })],
+      });
+      vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page(rows));
+      vi.mocked(tasksApi.move).mockResolvedValue(task({ id: 't1', title: 'Quest one', listId: 'l2' }));
+      render(
+        <MemoryRouter>
+          <AllQuestsView />
+        </MemoryRouter>
+      );
+      await screen.findByText('Quest one');
+
+      fireEvent.click(screen.getByText('Select'));
+      fireEvent.click(screen.getByLabelText('Select Quest one'));
+      fireEvent.click(screen.getByText('Actions ▾'));
+      fireEvent.click(screen.getByText('Move to List'));
+
+      const select = await screen.findByDisplayValue('Select a list…');
+      fireEvent.change(select, { target: { value: 'l2' } });
+      fireEvent.click(screen.getByText('Move'));
+
+      await waitFor(() => expect(tasksApi.move).toHaveBeenCalledWith('t1', 'l2'));
+    });
+
+    it('assigns a hunter to selected quests when they share one workspace', async () => {
+      const rows = [
+        task({ id: 't1', title: 'Quest one', list: { id: 'l1', name: 'List A', project: { id: 'p1', name: 'Project A' } } }),
+      ];
+      useStore.setState({ tasks: rows, projects: [project({ id: 'p1', workspaceId: 'w1' })] });
+      vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page(rows));
+      vi.mocked(workspacesApi.members).mockResolvedValue([
+        { id: 'm1', role: 'member', createdAt: '', user: { id: 'u1', name: 'Sung Jin-Woo', email: 'jw@example.com' } },
+      ]);
+      vi.mocked(assigneesApi.add).mockResolvedValue({ id: 'u1', name: 'Sung Jin-Woo' });
+      render(
+        <MemoryRouter>
+          <AllQuestsView />
+        </MemoryRouter>
+      );
+      await screen.findByText('Quest one');
+
+      fireEvent.click(screen.getByText('Select'));
+      fireEvent.click(screen.getByLabelText('Select Quest one'));
+      fireEvent.click(screen.getByText('Actions ▾'));
+      fireEvent.click(screen.getByText('Assign a Hunter'));
+
+      const select = await screen.findByDisplayValue('Select a hunter…');
+      fireEvent.change(select, { target: { value: 'u1' } });
+      fireEvent.click(screen.getByText('Assign'));
+
+      await waitFor(() => expect(assigneesApi.add).toHaveBeenCalledWith('t1', 'u1'));
+    });
+
+    it('converts a selected quest into a subtask of a chosen parent', async () => {
+      const rows = [task({ id: 't1', title: 'Quest one' }), task({ id: 't2', title: 'Quest two' })];
+      useStore.setState({ tasks: rows });
+      vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page(rows));
+      vi.mocked(tasksApi.reorder).mockResolvedValue(task({ id: 't1', title: 'Quest one', parentTaskId: 't2' }));
+      render(
+        <MemoryRouter>
+          <AllQuestsView />
+        </MemoryRouter>
+      );
+      await screen.findByText('Quest one');
+
+      fireEvent.click(screen.getByText('Select'));
+      fireEvent.click(screen.getByLabelText('Select Quest one'));
+      fireEvent.click(screen.getByText('Actions ▾'));
+      fireEvent.click(screen.getByText('Convert to Subtask'));
+
+      fireEvent.click(await screen.findByRole('radio'));
+      fireEvent.click(screen.getByText('Convert'));
+
+      await waitFor(() => expect(tasksApi.reorder).toHaveBeenCalledWith('t1', { parentTaskId: 't2', position: 0 }));
+    });
+
+    it('links selected quests to a target via the Related Quests relation', async () => {
+      const rows = [task({ id: 't1', title: 'Quest one' }), task({ id: 't2', title: 'Quest two' })];
+      useStore.setState({ tasks: rows });
+      vi.mocked(tasksApi.listAllPaged).mockResolvedValue(page(rows));
+      vi.mocked(relationsApi.create).mockResolvedValue({ id: 'rel1', type: 'related', task: { id: 't2', title: 'Quest two', done: false, priority: 'medium' } });
+      render(
+        <MemoryRouter>
+          <AllQuestsView />
+        </MemoryRouter>
+      );
+      await screen.findByText('Quest one');
+
+      fireEvent.click(screen.getByText('Select'));
+      fireEvent.click(screen.getByLabelText('Select Quest one'));
+      fireEvent.click(screen.getByText('Actions ▾'));
+      fireEvent.click(screen.getByText('Link Tasks'));
+
+      fireEvent.click(await screen.findByRole('radio'));
+      fireEvent.click(screen.getByText('Link'));
+
+      await waitFor(() => expect(relationsApi.create).toHaveBeenCalledWith('t1', 't2', 'related'));
     });
   });
 });

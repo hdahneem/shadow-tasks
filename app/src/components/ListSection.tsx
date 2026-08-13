@@ -10,7 +10,19 @@ import { ProgressBar } from './ProgressBar';
 import { TaskModal } from './TaskModal';
 import { CreateTaskFromTemplateModal } from './CreateTaskFromTemplateModal';
 
-export function ListSection({ list, canEdit = true }: { list: TodoList; canEdit?: boolean }) {
+export function ListSection({
+  list,
+  canEdit = true,
+  selectable = false,
+  selectedIds,
+  onToggleSelect,
+}: {
+  list: TodoList;
+  canEdit?: boolean;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
+}) {
   const allTasks = useStore((s) => s.tasks);
   const tasks = useMemo(() => allTasks.filter((t) => t.listId === list.id), [allTasks, list.id]);
   const deleteList = useStore((s) => s.deleteList);
@@ -167,8 +179,20 @@ export function ListSection({ list, canEdit = true }: { list: TodoList; canEdit?
             No tasks yet. Add one to begin the quest.
           </p>
         ) : (
-          sorted.map((t) =>
-            canEdit ? (
+          sorted.map((t) => {
+            const row = (
+              <TaskRow
+                task={t}
+                selectable={selectable}
+                selected={selectedIds?.has(t.id) ?? false}
+                onToggleSelect={() => onToggleSelect?.(t.id)}
+              />
+            );
+            // Dragging and selection checkboxes both live on the row wrapper
+            // (there's no separate drag handle), so drag is disabled while
+            // selection mode is active to avoid the two gestures conflicting.
+            if (!canEdit || selectable) return <div key={t.id}>{row}</div>;
+            return (
               <div
                 key={t.id}
                 draggable
@@ -181,12 +205,10 @@ export function ListSection({ list, canEdit = true }: { list: TodoList; canEdit?
                 }}
                 className={draggingId === t.id ? 'opacity-40' : undefined}
               >
-                <TaskRow task={t} />
+                {row}
               </div>
-            ) : (
-              <TaskRow key={t.id} task={t} />
-            )
-          )
+            );
+          })
         )}
       </div>
 

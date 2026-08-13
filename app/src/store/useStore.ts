@@ -1,6 +1,17 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { Folder, Project, TodoList, Task, Rank, Priority, Workspace, SyncStatus, TodayEntryStatus } from '../types';
+import type {
+  Folder,
+  Project,
+  TodoList,
+  Task,
+  Rank,
+  Priority,
+  Workspace,
+  SyncStatus,
+  TodayEntryStatus,
+  RelationType,
+} from '../types';
 import { PRIORITY_XP } from '../types';
 import {
   foldersApi,
@@ -12,6 +23,8 @@ import {
   workspacesApi,
   taskTagsApi,
   todayApi,
+  assigneesApi,
+  relationsApi,
   type TaskUpdateInput,
 } from '../api/services';
 import { errorMessage, ApiError } from '../api/client';
@@ -108,6 +121,26 @@ function notifyXpGain(before: Hunter, after: Hunter, xpDelta: number) {
   toast.success(`+${xpDelta} XP`);
 }
 
+/**
+ * Shared completion feedback for the newer bulk actions (assign, status, dates,
+ * move, copy, convert-to-subtask, duplicate, link), which — unlike the older
+ * bulk* actions — use Promise.allSettled instead of Promise.all so a single
+ * failure doesn't discard successes for the rest of the batch. Always surfaces
+ * an outcome (per the "provide feedback ... or if any tasks could not be
+ * updated" requirement) instead of silently succeeding or throwing.
+ */
+function bulkResultToast(pastTenseVerb: string, succeeded: number, total: number) {
+  const failed = total - succeeded;
+  const noun = (n: number) => `${n} quest${n === 1 ? '' : 's'}`;
+  if (succeeded === 0) {
+    toast.error(`Could not update ${noun(total)}.`);
+  } else if (failed > 0) {
+    toast.error(`${pastTenseVerb} ${succeeded} of ${total} quests — ${failed} failed.`);
+  } else {
+    toast.success(`${pastTenseVerb} ${noun(succeeded)}.`);
+  }
+}
+
 interface StoreState {
   folders: Folder[];
   projects: Project[];
@@ -188,6 +221,14 @@ interface StoreState {
   bulkArchive: (ids: string[]) => Promise<void>;
   bulkDelete: (ids: string[]) => Promise<void>;
   bulkAddTag: (ids: string[], tagId: string) => Promise<void>;
+  bulkAssign: (ids: string[], userId: string) => Promise<void>;
+  bulkSetStatus: (ids: string[], statusId: string) => Promise<void>;
+  bulkSetDates: (ids: string[], patch: { startDate?: string | null; dueDate?: string | null }) => Promise<void>;
+  bulkMove: (ids: string[], listId: string) => Promise<void>;
+  bulkCopyToList: (ids: string[], listId: string) => Promise<void>;
+  bulkConvertToSubtask: (ids: string[], parentTaskId: string) => Promise<void>;
+  bulkDuplicate: (ids: string[]) => Promise<void>;
+  bulkLinkTasks: (ids: string[], targetTaskId: string, type: RelationType) => Promise<void>;
 }
 
 const emptyHunter: Hunter = { level: 1, xp: 0, tasksCompleted: 0, highestLevel: 1 };
@@ -715,6 +756,149 @@ export const useStore = create<StoreState>()(
           toast.error(errorMessage(err, 'Could not tag quests.'));
           throw err;
         }
+      },
+
+      // The actions below (bulkAssign through bulkLinkTasks) are the newer half
+      // of the bulk-action set. Unlike the ones above, they use
+      // Promise.allSettled and never throw — a single failed request in a batch
+      // of 20 shouldn't discard the 19 that succeeded, so each one applies
+      // whatever did succeed and reports the outcome via bulkResultToast
+      // instead of an all-or-nothing try/catch.
+      bulkAssign: async (ids, userId) => {
+        const targets = get().tasks.filter((t) => ids.includes(t.id) && !t.assignees?.some((a) => a.id === userId));
+        if (targets.length === 0) return;
+        const results = await Promise.allSettled(targets.map((t) => assigneesApi.add(t.id, userId)));
+        const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+        // assigneesApi.add only returns the raw join row, not a fully-resolved
+        // {id, name} assignee — refetch rather than reconstruct it locally.
+        if (succeeded > 0) await get().refreshTasks();
+        bulkResultToast('Assigned', succeeded, targets.length);
+      },
+
+      bulkSetStatus: async (ids, statusId) => {
+        const beforeById = new Map(get().tasks.map((t) => [t.id, t]));
+        const results = await Promise.allSettled(ids.map((id) => tasksApi.setStatus(id, statusId)));
+        const updated = results
+          .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (updated.length > 0) {
+          const byId = new Map(updated.map((t) => [t.id, t]));
+          const beforeHunter = get().hunter;
+          let hunter = beforeHunter;
+          let xpDelta = 0;
+          for (const t of updated) {
+            const before = beforeById.get(t.id);
+            if (before && before.done !== t.done) {
+              hunter = applyDoneXpDelta(hunter, before.priority, t.done);
+              xpDelta += PRIORITY_XP[before.priority] * (t.done ? 1 : -1);
+            }
+          }
+          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t), hunter }));
+          notifyXpGain(beforeHunter, hunter, xpDelta);
+        }
+        bulkResultToast('Updated', updated.length, ids.length);
+      },
+
+      bulkSetDates: async (ids, patch) => {
+        const results = await Promise.allSettled(ids.map((id) => tasksApi.update(id, patch)));
+        const updated = results
+          .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (updated.length > 0) {
+          const byId = new Map(updated.map((t) => [t.id, t]));
+          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
+        }
+        bulkResultToast('Updated', updated.length, ids.length);
+      },
+
+      bulkMove: async (ids, listId) => {
+        const results = await Promise.allSettled(ids.map((id) => tasksApi.move(id, listId)));
+        const updated = results
+          .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (updated.length > 0) {
+          const byId = new Map(updated.map((t) => [t.id, t]));
+          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
+        }
+        bulkResultToast('Moved', updated.length, ids.length);
+      },
+
+      // "Add to a list" — clones each task (via the same endpoint the single-task
+      // Duplicate button uses) and relocates the clone, leaving the originals
+      // untouched in their current list.
+      bulkCopyToList: async (ids, listId) => {
+        const results = await Promise.allSettled(
+          ids.map(async (id) => {
+            const clone = await tasksApi.duplicate(id);
+            return tasksApi.move(clone.id, listId);
+          })
+        );
+        const created = results
+          .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (created.length > 0) set((s) => ({ tasks: [...s.tasks, ...created] }));
+        bulkResultToast('Copied', created.length, ids.length);
+      },
+
+      bulkConvertToSubtask: async (ids, parentTaskId) => {
+        const parent = get().tasks.find((t) => t.id === parentTaskId);
+        const targets = ids.filter((id) => id !== parentTaskId);
+        if (!parent || targets.length === 0) return;
+
+        // Subtasks must live in the same list as their parent — the reorder
+        // endpoint doesn't enforce this itself, but leaving them split across
+        // lists would be a confusing state, so move anything that isn't
+        // already there first.
+        const needsMove = targets
+          .map((id) => get().tasks.find((t) => t.id === id))
+          .filter((t): t is Task => !!t && t.listId !== parent.listId);
+        if (needsMove.length > 0) {
+          const moveResults = await Promise.allSettled(needsMove.map((t) => tasksApi.move(t.id, parent.listId)));
+          const moved = moveResults
+            .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+            .map((r) => r.value);
+          if (moved.length > 0) {
+            const byId = new Map(moved.map((t) => [t.id, t]));
+            set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
+          }
+        }
+
+        const siblingPositions = get()
+          .tasks.filter((t) => t.parentTaskId === parentTaskId)
+          .map((t) => t.position);
+        let nextPosition = siblingPositions.length > 0 ? Math.max(...siblingPositions) + 1 : 0;
+        const results = await Promise.allSettled(
+          targets.map((id) => tasksApi.reorder(id, { parentTaskId, position: nextPosition++ }))
+        );
+        const updated = results
+          .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (updated.length > 0) {
+          const byId = new Map(updated.map((t) => [t.id, t]));
+          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
+        }
+        bulkResultToast('Converted', updated.length, targets.length);
+      },
+
+      bulkDuplicate: async (ids) => {
+        const results = await Promise.allSettled(ids.map((id) => tasksApi.duplicate(id)));
+        const created = results
+          .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
+          .map((r) => r.value);
+        if (created.length > 0) set((s) => ({ tasks: [...s.tasks, ...created] }));
+        bulkResultToast('Duplicated', created.length, ids.length);
+      },
+
+      // Links every selected task to one target task via the existing Related
+      // Quests relation (with automatic backlinks — see relationsApi.create) —
+      // doesn't touch anything in the list-view Task shape, so there's no local
+      // `tasks` state to update, just the completion toast.
+      bulkLinkTasks: async (ids, targetTaskId, type) => {
+        const targets = ids.filter((id) => id !== targetTaskId);
+        if (targets.length === 0) return;
+        const results = await Promise.allSettled(targets.map((id) => relationsApi.create(id, targetTaskId, type)));
+        const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+        bulkResultToast('Linked', succeeded, targets.length);
       },
     }),
     {

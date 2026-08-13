@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { xpForLevel, rankForLevel } from './useStore';
+import type { Task } from '../types';
 
 vi.mock('../api/services', () => ({
   foldersApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), remove: vi.fn() },
@@ -16,9 +17,13 @@ vi.mock('../api/services', () => ({
     setStatus: vi.fn(),
     reorder: vi.fn(),
     syncStatus: vi.fn(),
+    move: vi.fn(),
+    duplicate: vi.fn(),
   },
   workspacesApi: { list: vi.fn() },
   todayApi: { list: vi.fn(), setStatus: vi.fn() },
+  assigneesApi: { add: vi.fn(), remove: vi.fn() },
+  relationsApi: { create: vi.fn(), remove: vi.fn() },
 }));
 
 describe('xpForLevel', () => {
@@ -820,5 +825,275 @@ describe('dismissSyncConflict', () => {
 
     expect(useStore.getState().syncConflict).toBeNull();
     expect(useStore.getState().syncState).toBe('idle');
+  });
+});
+
+function bulkTask(overrides: Partial<Task> = {}): Task {
+  return {
+    id: 't1',
+    listId: 'l1',
+    parentTaskId: null,
+    title: 'Untitled quest',
+    priority: 'medium',
+    done: false,
+    position: 0,
+    createdAt: '',
+    updatedAt: '',
+    progress: 0,
+    ...overrides,
+  };
+}
+
+describe('bulkAssign', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('assigns and refetches on success', async () => {
+    const { assigneesApi, tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a' }), bulkTask({ id: 'b' })] });
+    vi.mocked(assigneesApi.add).mockResolvedValue({ id: 'u1', name: 'Sung Jin-Woo' });
+    vi.mocked(tasksApi.listAll).mockResolvedValue([bulkTask({ id: 'a', assignees: [{ id: 'u1', name: 'Sung Jin-Woo' }] })]);
+
+    await useStore.getState().bulkAssign(['a', 'b'], 'u1');
+
+    expect(assigneesApi.add).toHaveBeenCalledWith('a', 'u1');
+    expect(assigneesApi.add).toHaveBeenCalledWith('b', 'u1');
+    expect(tasksApi.listAll).toHaveBeenCalled(); // refetch, since assign responses aren't full tasks
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]).toMatchObject({ type: 'success', message: 'Assigned 2 quests.' });
+  });
+
+  it('skips tasks already assigned to that hunter', async () => {
+    const { assigneesApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a', assignees: [{ id: 'u1', name: 'Sung Jin-Woo' }] })] });
+
+    await useStore.getState().bulkAssign(['a'], 'u1');
+
+    expect(assigneesApi.add).not.toHaveBeenCalled();
+  });
+
+  it('reports a partial failure without discarding the successes', async () => {
+    const { assigneesApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a' }), bulkTask({ id: 'b' })] });
+    vi.mocked(assigneesApi.add)
+      .mockResolvedValueOnce({ id: 'u1', name: 'Sung Jin-Woo' })
+      .mockRejectedValueOnce(new Error('nope'));
+
+    await useStore.getState().bulkAssign(['a', 'b'], 'u1');
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]).toMatchObject({ type: 'error', message: 'Assigned 1 of 2 quests — 1 failed.' });
+  });
+});
+
+describe('bulkSetStatus', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('updates tasks and applies the XP delta when a status flips done', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({
+      tasks: [bulkTask({ id: 'a', priority: 'high', done: false })],
+      hunter: { level: 1, xp: 0, tasksCompleted: 0, highestLevel: 1 },
+    });
+    vi.mocked(tasksApi.setStatus).mockResolvedValue(bulkTask({ id: 'a', priority: 'high', done: true, statusId: 's1' }));
+
+    await useStore.getState().bulkSetStatus(['a'], 's1');
+
+    expect(useStore.getState().tasks[0].statusId).toBe('s1');
+    expect(useStore.getState().hunter.xp).toBe(35); // high priority XP
+    expect(useStore.getState().hunter.tasksCompleted).toBe(1);
+  });
+
+  it('reports a partial failure', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a' }), bulkTask({ id: 'b' })] });
+    vi.mocked(tasksApi.setStatus)
+      .mockResolvedValueOnce(bulkTask({ id: 'a', statusId: 's1' }))
+      .mockRejectedValueOnce(new Error('nope'));
+
+    await useStore.getState().bulkSetStatus(['a', 'b'], 's1');
+
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]).toMatchObject({ type: 'error', message: 'Updated 1 of 2 quests — 1 failed.' });
+  });
+});
+
+describe('bulkSetDates', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('applies the same date patch to every task', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a' }), bulkTask({ id: 'b' })] });
+    vi.mocked(tasksApi.update).mockImplementation(async (id, patch) => bulkTask({ id, ...patch }));
+
+    await useStore.getState().bulkSetDates(['a', 'b'], { dueDate: '2026-09-01T00:00:00.000Z' });
+
+    expect(tasksApi.update).toHaveBeenCalledWith('a', { dueDate: '2026-09-01T00:00:00.000Z' });
+    expect(tasksApi.update).toHaveBeenCalledWith('b', { dueDate: '2026-09-01T00:00:00.000Z' });
+    expect(useStore.getState().tasks.map((t) => t.dueDate)).toEqual([
+      '2026-09-01T00:00:00.000Z',
+      '2026-09-01T00:00:00.000Z',
+    ]);
+  });
+});
+
+describe('bulkMove', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('moves every task to the target list', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a', listId: 'l1' })] });
+    vi.mocked(tasksApi.move).mockResolvedValue(bulkTask({ id: 'a', listId: 'l2' }));
+
+    await useStore.getState().bulkMove(['a'], 'l2');
+
+    expect(tasksApi.move).toHaveBeenCalledWith('a', 'l2');
+    expect(useStore.getState().tasks[0].listId).toBe('l2');
+  });
+});
+
+describe('bulkCopyToList', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('duplicates then relocates the clone, leaving the original untouched', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a', listId: 'l1', title: 'Original' })] });
+    vi.mocked(tasksApi.duplicate).mockResolvedValue(bulkTask({ id: 'a-copy', listId: 'l1', title: 'Original (copy)' }));
+    vi.mocked(tasksApi.move).mockResolvedValue(bulkTask({ id: 'a-copy', listId: 'l2', title: 'Original (copy)' }));
+
+    await useStore.getState().bulkCopyToList(['a'], 'l2');
+
+    expect(tasksApi.duplicate).toHaveBeenCalledWith('a');
+    expect(tasksApi.move).toHaveBeenCalledWith('a-copy', 'l2');
+    const ids = useStore.getState().tasks.map((t) => t.id);
+    expect(ids).toEqual(['a', 'a-copy']); // original still present, clone appended
+    expect(useStore.getState().tasks.find((t) => t.id === 'a')?.listId).toBe('l1');
+    expect(useStore.getState().tasks.find((t) => t.id === 'a-copy')?.listId).toBe('l2');
+  });
+});
+
+describe('bulkConvertToSubtask', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('reparents same-list tasks without moving them first', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({
+      tasks: [bulkTask({ id: 'parent', listId: 'l1' }), bulkTask({ id: 'child', listId: 'l1' })],
+    });
+    vi.mocked(tasksApi.reorder).mockResolvedValue(bulkTask({ id: 'child', listId: 'l1', parentTaskId: 'parent', position: 0 }));
+
+    await useStore.getState().bulkConvertToSubtask(['child'], 'parent');
+
+    expect(tasksApi.move).not.toHaveBeenCalled();
+    expect(tasksApi.reorder).toHaveBeenCalledWith('child', { parentTaskId: 'parent', position: 0 });
+    expect(useStore.getState().tasks.find((t) => t.id === 'child')?.parentTaskId).toBe('parent');
+  });
+
+  it('moves a cross-list task into the parent\'s list before reparenting it', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({
+      tasks: [bulkTask({ id: 'parent', listId: 'l1' }), bulkTask({ id: 'child', listId: 'l2' })],
+    });
+    vi.mocked(tasksApi.move).mockResolvedValue(bulkTask({ id: 'child', listId: 'l1' }));
+    vi.mocked(tasksApi.reorder).mockResolvedValue(bulkTask({ id: 'child', listId: 'l1', parentTaskId: 'parent', position: 0 }));
+
+    await useStore.getState().bulkConvertToSubtask(['child'], 'parent');
+
+    expect(tasksApi.move).toHaveBeenCalledWith('child', 'l1');
+    expect(tasksApi.reorder).toHaveBeenCalledWith('child', { parentTaskId: 'parent', position: 0 });
+  });
+
+  it('excludes the parent itself from the target list, even if it was selected', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'parent', listId: 'l1' })] });
+
+    await useStore.getState().bulkConvertToSubtask(['parent'], 'parent');
+
+    expect(tasksApi.reorder).not.toHaveBeenCalled();
+  });
+});
+
+describe('bulkDuplicate', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('appends a clone of each task without touching the originals', async () => {
+    const { tasksApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a', title: 'Original' })] });
+    vi.mocked(tasksApi.duplicate).mockResolvedValue(bulkTask({ id: 'a-copy', title: 'Original (copy)' }));
+
+    await useStore.getState().bulkDuplicate(['a']);
+
+    expect(useStore.getState().tasks.map((t) => t.id)).toEqual(['a', 'a-copy']);
+  });
+});
+
+describe('bulkLinkTasks', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  it('links every selected task to the target', async () => {
+    const { relationsApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    const { useToastStore } = await import('./useToastStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'a' }), bulkTask({ id: 'b' }), bulkTask({ id: 'target' })] });
+    vi.mocked(relationsApi.create).mockResolvedValue({
+      id: 'r1',
+      type: 'related',
+      task: { id: 'target', title: 'Target', done: false, priority: 'medium' },
+    });
+
+    await useStore.getState().bulkLinkTasks(['a', 'b'], 'target', 'related');
+
+    expect(relationsApi.create).toHaveBeenCalledWith('a', 'target', 'related');
+    expect(relationsApi.create).toHaveBeenCalledWith('b', 'target', 'related');
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts[toasts.length - 1]).toMatchObject({ type: 'success', message: 'Linked 2 quests.' });
+  });
+
+  it('excludes the target task from its own link list', async () => {
+    const { relationsApi } = await import('../api/services');
+    const { useStore } = await import('./useStore');
+    useStore.setState({ tasks: [bulkTask({ id: 'target' })] });
+
+    await useStore.getState().bulkLinkTasks(['target'], 'target', 'related');
+
+    expect(relationsApi.create).not.toHaveBeenCalled();
   });
 });

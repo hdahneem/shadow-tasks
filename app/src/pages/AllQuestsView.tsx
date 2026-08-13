@@ -3,11 +3,19 @@ import { useStore } from '../store/useStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { Panel } from '../components/Panel';
 import { TaskRow } from '../components/TaskRow';
+import { BulkActionsMenu, type BulkActionMenuItem } from '../components/BulkActionsMenu';
+import { BulkListPickerModal } from '../components/BulkListPickerModal';
+import { BulkTaskPickerModal } from '../components/BulkTaskPickerModal';
+import { BulkAssignModal } from '../components/BulkAssignModal';
+import { BulkStatusModal } from '../components/BulkStatusModal';
+import { BulkDatesModal } from '../components/BulkDatesModal';
 import { tasksToCsv } from '../lib/csv';
 import { tagsApi, tasksApi } from '../api/services';
 import { errorMessage } from '../api/client';
 import { toast } from '../store/useToastStore';
 import type { Priority, Tag, Task } from '../types';
+
+type BulkModal = 'assign' | 'status' | 'dates' | 'move' | 'addToList' | 'convertToSubtask' | 'link' | null;
 
 const PAGE_SIZE = 25;
 
@@ -24,16 +32,26 @@ function sortTasks(list: Task[]): Task[] {
 export function AllQuestsView() {
   const currentUserId = useAuthStore((s) => s.user?.id);
   const currentWorkspaceId = useStore((s) => s.currentWorkspaceId);
+  const projects = useStore((s) => s.projects);
   const bulkSetDone = useStore((s) => s.bulkSetDone);
   const bulkSetPriority = useStore((s) => s.bulkSetPriority);
   const bulkArchive = useStore((s) => s.bulkArchive);
   const bulkDelete = useStore((s) => s.bulkDelete);
   const bulkAddTag = useStore((s) => s.bulkAddTag);
+  const bulkAssign = useStore((s) => s.bulkAssign);
+  const bulkSetStatus = useStore((s) => s.bulkSetStatus);
+  const bulkSetDates = useStore((s) => s.bulkSetDates);
+  const bulkMove = useStore((s) => s.bulkMove);
+  const bulkCopyToList = useStore((s) => s.bulkCopyToList);
+  const bulkConvertToSubtask = useStore((s) => s.bulkConvertToSubtask);
+  const bulkDuplicate = useStore((s) => s.bulkDuplicate);
+  const bulkLinkTasks = useStore((s) => s.bulkLinkTasks);
   const [showDone, setShowDone] = useState(false);
   const [onlyMine, setOnlyMine] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkModal, setBulkModal] = useState<BulkModal>(null);
   const [tags, setTags] = useState<Tag[]>([]);
   const [exporting, setExporting] = useState(false);
 
@@ -106,7 +124,61 @@ export function AllQuestsView() {
     }
   };
 
+  // These use Promise.allSettled and manage their own toasts (see
+  // bulkResultToast in useStore.ts), so a full refetch — rather than a
+  // hand-rolled local-state transform per action — is the simplest way to
+  // keep `loadedTasks` in sync after a partial success.
+  const runNewBulk = async (fn: () => Promise<void>) => {
+    setBulkBusy(true);
+    try {
+      await fn();
+    } finally {
+      setBulkBusy(false);
+      clearSelection();
+      setLoading(true);
+      load(1, showDone).finally(() => setLoading(false));
+    }
+  };
+
   const selectedCount = selectedIds.size;
+  const selectedTasks = useMemo(() => loadedTasks.filter((t) => selectedIds.has(t.id)), [loadedTasks, selectedIds]);
+
+  const sharedProjectId = useMemo(() => {
+    const ids = new Set(selectedTasks.map((t) => t.list?.project?.id).filter((id): id is string => !!id));
+    return ids.size === 1 ? [...ids][0] : null;
+  }, [selectedTasks]);
+
+  const sharedWorkspaceId = useMemo(() => {
+    const ids = new Set(
+      selectedTasks
+        .map((t) => projects.find((p) => p.id === t.list?.project?.id)?.workspaceId)
+        .filter((id): id is string => !!id)
+    );
+    return ids.size === 1 ? [...ids][0] : null;
+  }, [selectedTasks, projects]);
+
+  const bulkMenuItems: BulkActionMenuItem[] = [
+    {
+      key: 'assign',
+      label: 'Assign a Hunter',
+      onSelect: () => setBulkModal('assign'),
+      disabled: !sharedWorkspaceId,
+      title: sharedWorkspaceId ? undefined : 'Select quests from a single workspace to assign a hunter.',
+    },
+    {
+      key: 'status',
+      label: 'Change Status',
+      onSelect: () => setBulkModal('status'),
+      disabled: !sharedProjectId,
+      title: sharedProjectId ? undefined : 'Select quests from a single project to change status.',
+    },
+    { key: 'dates', label: 'Change Dates', onSelect: () => setBulkModal('dates') },
+    { key: 'move', label: 'Move to List', onSelect: () => setBulkModal('move') },
+    { key: 'addToList', label: 'Add to List', onSelect: () => setBulkModal('addToList') },
+    { key: 'convertToSubtask', label: 'Convert to Subtask', onSelect: () => setBulkModal('convertToSubtask') },
+    { key: 'duplicate', label: 'Duplicate', onSelect: () => runNewBulk(() => bulkDuplicate([...selectedIds])) },
+    { key: 'link', label: 'Link Tasks', onSelect: () => setBulkModal('link') },
+  ];
 
   const exportCsv = async () => {
     setExporting(true);
@@ -252,15 +324,18 @@ export function AllQuestsView() {
               ))}
             </select>
           )}
+          <BulkActionsMenu items={bulkMenuItems} busy={bulkBusy} />
           <button
             disabled={bulkBusy}
-            onClick={() =>
-              runBulk(
-                () => bulkArchive([...selectedIds]),
-                (tasks) => tasks.filter((t) => !selectedIds.has(t.id)),
-                selectedIds.size
-              )
-            }
+            onClick={() => {
+              if (confirm(`Archive ${selectedCount} quest${selectedCount === 1 ? '' : 's'}?`)) {
+                runBulk(
+                  () => bulkArchive([...selectedIds]),
+                  (tasks) => tasks.filter((t) => !selectedIds.has(t.id)),
+                  selectedIds.size
+                );
+              }
+            }}
             className="hud-btn px-2 py-1 cursor-pointer disabled:opacity-50"
           >
             Archive
@@ -313,6 +388,62 @@ export function AllQuestsView() {
         >
           {loadingMore ? 'Loading…' : 'Load More'}
         </button>
+      )}
+
+      {bulkModal === 'assign' && sharedWorkspaceId && (
+        <BulkAssignModal
+          workspaceId={sharedWorkspaceId}
+          onSubmit={(userId) => runNewBulk(() => bulkAssign([...selectedIds], userId))}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
+      {bulkModal === 'status' && sharedProjectId && (
+        <BulkStatusModal
+          projectId={sharedProjectId}
+          onSubmit={(statusId) => runNewBulk(() => bulkSetStatus([...selectedIds], statusId))}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
+      {bulkModal === 'dates' && (
+        <BulkDatesModal
+          onSubmit={(patch) => runNewBulk(() => bulkSetDates([...selectedIds], patch))}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
+      {bulkModal === 'move' && (
+        <BulkListPickerModal
+          title="Move to List"
+          submitLabel="Move"
+          onSubmit={(listId) => runNewBulk(() => bulkMove([...selectedIds], listId))}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
+      {bulkModal === 'addToList' && (
+        <BulkListPickerModal
+          title="Add to List"
+          submitLabel="Add"
+          onSubmit={(listId) => runNewBulk(() => bulkCopyToList([...selectedIds], listId))}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
+      {bulkModal === 'convertToSubtask' && (
+        <BulkTaskPickerModal
+          title="Convert to Subtask"
+          submitLabel="Convert"
+          excludeIds={[...selectedIds]}
+          onSubmit={(parentTaskId) => runNewBulk(() => bulkConvertToSubtask([...selectedIds], parentTaskId))}
+          onClose={() => setBulkModal(null)}
+        />
+      )}
+      {bulkModal === 'link' && (
+        <BulkTaskPickerModal
+          title="Link Tasks"
+          submitLabel="Link"
+          excludeIds={[...selectedIds]}
+          showRelationType
+          onSubmit={(targetTaskId, type) => runNewBulk(() => bulkLinkTasks([...selectedIds], targetTaskId, type!))}
+          onClose={() => setBulkModal(null)}
+        />
       )}
     </div>
   );

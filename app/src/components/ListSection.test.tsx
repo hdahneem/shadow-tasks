@@ -183,3 +183,37 @@ describe('ListSection task reordering', () => {
     expect(screen.getByText('Alpha').closest('[draggable="true"]')).toBeNull();
   });
 });
+
+describe('ListSection selection mode', () => {
+  beforeEach(() => {
+    useStore.setState({ addTask: vi.fn().mockResolvedValue(undefined), reorderTask: vi.fn().mockResolvedValue(undefined) });
+  });
+
+  it('shows a checkbox per task and calls onToggleSelect when selectable', () => {
+    useStore.setState({ tasks: [task({ id: 't1', title: 'Alpha', position: 1 })] });
+    const onToggleSelect = vi.fn();
+    renderWithRouter(
+      <ListSection list={list()} selectable selectedIds={new Set()} onToggleSelect={onToggleSelect} />
+    );
+
+    const checkbox = screen.getByLabelText('Select Alpha');
+    fireEvent.click(checkbox);
+    expect(onToggleSelect).toHaveBeenCalledWith('t1');
+  });
+
+  it('reflects selectedIds in the checkbox state', () => {
+    useStore.setState({ tasks: [task({ id: 't1', title: 'Alpha', position: 1 })] });
+    renderWithRouter(
+      <ListSection list={list()} selectable selectedIds={new Set(['t1'])} onToggleSelect={vi.fn()} />
+    );
+    expect(screen.getByLabelText('Select Alpha')).toBeChecked();
+  });
+
+  it('disables drag while selection mode is active, even when canEdit is true', () => {
+    useStore.setState({ tasks: [task({ id: 't1', title: 'Alpha', position: 1 })] });
+    renderWithRouter(
+      <ListSection list={list()} canEdit selectable selectedIds={new Set()} onToggleSelect={vi.fn()} />
+    );
+    expect(screen.getByText('Alpha').closest('[draggable="true"]')).toBeNull();
+  });
+});
