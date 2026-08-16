@@ -68,34 +68,44 @@ export function highestLevelOf(hunter: Hunter): number {
 }
 
 /**
- * Applies the XP/level/tasksCompleted delta for a task's done state flipping.
- * Shared by every path that can complete a task — the checkbox, the status
- * dropdown, and the Kanban board — so gamification stays consistent no matter
- * which surface someone uses to finish a quest.
+ * Hunter stats are fully derived from completed tasks — active and archived —
+ * rather than tracked as an independent incrementally-updated counter. That
+ * means every device converges on the same Level/XP/Total Cleared as soon as
+ * it has synced task data, instead of each device keeping its own local-only
+ * tally that drifts the moment a completion happens somewhere else (see the
+ * store-wide subscribe below, which is what actually keeps this in sync after
+ * every mutation). Archived tasks have to be included alongside active ones
+ * because archiving a completed quest shouldn't cost you XP.
  */
-function applyDoneXpDelta(hunter: Hunter, priority: Priority, nowDone: boolean): Hunter {
-  const delta = PRIORITY_XP[priority] * (nowDone ? 1 : -1);
-  let xp = hunter.xp + delta;
-  let level = hunter.level;
-  let need = xpForLevel(level);
+function deriveHunterStats(tasks: Task[], archivedTasks: Task[], highestLevelFloor: number): Hunter {
+  let tasksCompleted = 0;
+  let totalXp = 0;
+  for (const t of tasks) {
+    if (t.done) {
+      tasksCompleted += 1;
+      totalXp += PRIORITY_XP[t.priority];
+    }
+  }
+  for (const t of archivedTasks) {
+    if (t.done) {
+      tasksCompleted += 1;
+      totalXp += PRIORITY_XP[t.priority];
+    }
+  }
 
+  let level = 1;
+  let xp = totalXp;
+  let need = xpForLevel(level);
   while (xp >= need) {
     xp -= need;
     level += 1;
     need = xpForLevel(level);
   }
-  while (xp < 0 && level > 1) {
-    level -= 1;
-    need = xpForLevel(level);
-    xp += need;
-  }
-  if (xp < 0) xp = 0;
 
-  const tasksCompleted = Math.max(0, hunter.tasksCompleted + (nowDone ? 1 : -1));
   // Badges earned at a past peak level stay earned even if XP is later reversed
-  // (e.g. undoing a mistaken completion) — a reward system that could revoke
+  // (e.g. deleting a completed task) — a reward system that could revoke
   // itself wouldn't feel like a reward.
-  const highestLevel = Math.max(highestLevelOf(hunter), level);
+  const highestLevel = Math.max(highestLevelFloor, level);
   return { level, xp, tasksCompleted, highestLevel };
 }
 
@@ -146,6 +156,10 @@ interface StoreState {
   projects: Project[];
   lists: TodoList[];
   tasks: Task[];
+  // Kept alongside `tasks` purely so Hunter stats can count completed quests
+  // that have since been archived (see deriveHunterStats) — not used to render
+  // any list view, which fetches its own paginated archived set separately.
+  archivedTasks: Task[];
   workspaces: Workspace[];
   currentWorkspaceId: string | null;
   loaded: boolean;
@@ -240,6 +254,7 @@ export const useStore = create<StoreState>()(
       projects: [],
       lists: [],
       tasks: [],
+      archivedTasks: [],
       workspaces: [],
       currentWorkspaceId: null,
       loaded: false,
@@ -257,11 +272,12 @@ export const useStore = create<StoreState>()(
         if (get().loading) return;
         set({ loading: true });
         try {
-          const [folders, projects, lists, tasks, workspaces, today] = await Promise.all([
+          const [folders, projects, lists, tasks, archivedTasks, workspaces, today] = await Promise.all([
             foldersApi.list(),
             projectsApi.list(),
             listsApi.listAll(),
             tasksApi.listAll(true),
+            tasksApi.listAll(true, true),
             workspacesApi.list(),
             todayApi.list(),
           ]);
@@ -270,7 +286,18 @@ export const useStore = create<StoreState>()(
             ? persistedId
             : (workspaces[0]?.id ?? null);
           const todayEntries = Object.fromEntries(today.entries.map((e) => [e.taskId, e.status]));
-          set({ folders, projects, lists, tasks, workspaces, currentWorkspaceId, todayEntries, loaded: true, loading: false });
+          set({
+            folders,
+            projects,
+            lists,
+            tasks,
+            archivedTasks,
+            workspaces,
+            currentWorkspaceId,
+            todayEntries,
+            loaded: true,
+            loading: false,
+          });
         } catch (err) {
           set({ loading: false });
           throw err;
@@ -361,6 +388,7 @@ export const useStore = create<StoreState>()(
           projects: [],
           lists: [],
           tasks: [],
+          archivedTasks: [],
           workspaces: [],
           loaded: false,
           hunter: emptyHunter,
@@ -563,12 +591,11 @@ export const useStore = create<StoreState>()(
         const task = get().tasks.find((t) => t.id === id);
         if (!task) return;
         const nowDone = !task.done;
+        const xpDelta = PRIORITY_XP[task.priority] * (nowDone ? 1 : -1);
         const queueOffline = () => {
           const before = get().hunter;
-          const hunter = applyDoneXpDelta(before, task.priority, nowDone);
           set((s) => ({
             tasks: s.tasks.map((t) => (t.id === id ? { ...t, done: nowDone, updatedAt: new Date().toISOString() } : t)),
-            hunter,
             pendingOps: appendOp(s.pendingOps, {
               id: crypto.randomUUID(),
               kind: 'toggleDone',
@@ -577,18 +604,17 @@ export const useStore = create<StoreState>()(
               createdAt: Date.now(),
             }),
           }));
-          notifyXpGain(before, hunter, PRIORITY_XP[task.priority] * (nowDone ? 1 : -1));
+          notifyXpGain(before, get().hunter, xpDelta);
         };
         if (!navigator.onLine) {
           queueOffline();
           return;
         }
         try {
-          const updated = await tasksApi.update(id, { done: nowDone });
           const before = get().hunter;
-          const hunter = applyDoneXpDelta(before, task.priority, nowDone);
-          set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)), hunter }));
-          notifyXpGain(before, hunter, PRIORITY_XP[task.priority] * (nowDone ? 1 : -1));
+          const updated = await tasksApi.update(id, { done: nowDone });
+          set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)) }));
+          notifyXpGain(before, get().hunter, xpDelta);
         } catch (err) {
           // See addTask: a raw fetch failure means the request never reached the
           // server, which is a more reliable "actually offline" signal than
@@ -608,13 +634,12 @@ export const useStore = create<StoreState>()(
       setTaskStatus: async (id, statusId) => {
         const beforeTask = get().tasks.find((t) => t.id === id);
         try {
+          const before = get().hunter;
           const updated = await tasksApi.setStatus(id, statusId);
           set((s) => ({ tasks: s.tasks.map((t) => (t.id === id ? updated : t)) }));
           if (beforeTask && beforeTask.done !== updated.done) {
-            const beforeHunter = get().hunter;
-            const hunter = applyDoneXpDelta(beforeHunter, beforeTask.priority, updated.done);
-            set({ hunter });
-            notifyXpGain(beforeHunter, hunter, PRIORITY_XP[beforeTask.priority] * (updated.done ? 1 : -1));
+            const xpDelta = PRIORITY_XP[beforeTask.priority] * (updated.done ? 1 : -1);
+            notifyXpGain(before, get().hunter, xpDelta);
           }
           return updated;
         } catch (err) {
@@ -691,8 +716,8 @@ export const useStore = create<StoreState>()(
         }
       },
       refreshTasks: async () => {
-        const tasks = await tasksApi.listAll(true);
-        set({ tasks });
+        const [tasks, archivedTasks] = await Promise.all([tasksApi.listAll(true), tasksApi.listAll(true, true)]);
+        set({ tasks, archivedTasks });
       },
 
       // Bulk actions reuse the single-task endpoints in parallel — task lists in this
@@ -702,14 +727,12 @@ export const useStore = create<StoreState>()(
         const targets = get().tasks.filter((t) => ids.includes(t.id) && t.done !== done);
         if (targets.length === 0) return;
         try {
+          const before = get().hunter;
           const updated = await Promise.all(targets.map((t) => tasksApi.update(t.id, { done })));
           const byId = new Map(updated.map((u) => [u.id, u]));
-          const beforeHunter = get().hunter;
-          let hunter = beforeHunter;
-          for (const t of targets) hunter = applyDoneXpDelta(hunter, t.priority, done);
-          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t), hunter }));
+          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
           const xpDelta = targets.reduce((sum, t) => sum + PRIORITY_XP[t.priority] * (done ? 1 : -1), 0);
-          notifyXpGain(beforeHunter, hunter, xpDelta);
+          notifyXpGain(before, get().hunter, xpDelta);
         } catch (err) {
           toast.error(errorMessage(err, 'Could not update quests.'));
           throw err;
@@ -727,8 +750,16 @@ export const useStore = create<StoreState>()(
       },
       bulkArchive: async (ids) => {
         try {
+          const archivedAt = new Date().toISOString();
           await Promise.all(ids.map((id) => tasksApi.archive(id)));
-          set((s) => ({ tasks: s.tasks.filter((t) => !ids.includes(t.id)) }));
+          set((s) => {
+            const idSet = new Set(ids);
+            const nowArchived = s.tasks.filter((t) => idSet.has(t.id)).map((t) => ({ ...t, archivedAt }));
+            return {
+              tasks: s.tasks.filter((t) => !idSet.has(t.id)),
+              archivedTasks: [...s.archivedTasks, ...nowArchived],
+            };
+          });
         } catch (err) {
           toast.error(errorMessage(err, 'Could not archive quests.'));
           throw err;
@@ -777,24 +808,20 @@ export const useStore = create<StoreState>()(
 
       bulkSetStatus: async (ids, statusId) => {
         const beforeById = new Map(get().tasks.map((t) => [t.id, t]));
+        const before = get().hunter;
         const results = await Promise.allSettled(ids.map((id) => tasksApi.setStatus(id, statusId)));
         const updated = results
           .filter((r): r is PromiseFulfilledResult<Task> => r.status === 'fulfilled')
           .map((r) => r.value);
         if (updated.length > 0) {
           const byId = new Map(updated.map((t) => [t.id, t]));
-          const beforeHunter = get().hunter;
-          let hunter = beforeHunter;
+          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t) }));
           let xpDelta = 0;
           for (const t of updated) {
-            const before = beforeById.get(t.id);
-            if (before && before.done !== t.done) {
-              hunter = applyDoneXpDelta(hunter, before.priority, t.done);
-              xpDelta += PRIORITY_XP[before.priority] * (t.done ? 1 : -1);
-            }
+            const b = beforeById.get(t.id);
+            if (b && b.done !== t.done) xpDelta += PRIORITY_XP[b.priority] * (t.done ? 1 : -1);
           }
-          set((s) => ({ tasks: s.tasks.map((t) => byId.get(t.id) ?? t), hunter }));
-          notifyXpGain(beforeHunter, hunter, xpDelta);
+          notifyXpGain(before, get().hunter, xpDelta);
         }
         bulkResultToast('Updated', updated.length, ids.length);
       },
@@ -916,6 +943,7 @@ export const useStore = create<StoreState>()(
         projects: s.projects,
         lists: s.lists,
         tasks: s.tasks,
+        archivedTasks: s.archivedTasks,
         workspaces: s.workspaces,
         pendingOps: s.pendingOps,
         lastSyncSignature: s.lastSyncSignature,
@@ -924,3 +952,25 @@ export const useStore = create<StoreState>()(
     }
   )
 );
+
+// Keeps `hunter` derived from `tasks`/`archivedTasks` no matter which action
+// path changed them — loadAll(), a sync reconciliation, an offline-queue
+// replay, or any of the mutations above. Previously every mutation that could
+// affect a task's done state had to remember to also recompute hunter by
+// hand; anything that changed `tasks` without going through one of those
+// specific call sites (most notably loadAll() picking up a completion made on
+// another device) silently left it stale — which is what caused Level/XP to
+// look wrong after syncing. A single always-on subscribe here means there's
+// no longer a call site that can forget.
+useStore.subscribe((state, prevState) => {
+  if (state.tasks === prevState.tasks && state.archivedTasks === prevState.archivedTasks) return;
+  const hunter = deriveHunterStats(state.tasks, state.archivedTasks, state.hunter.highestLevel);
+  if (
+    hunter.level !== state.hunter.level ||
+    hunter.xp !== state.hunter.xp ||
+    hunter.tasksCompleted !== state.hunter.tasksCompleted ||
+    hunter.highestLevel !== state.hunter.highestLevel
+  ) {
+    useStore.setState({ hunter });
+  }
+});

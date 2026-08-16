@@ -56,6 +56,43 @@ describe('rankForLevel', () => {
   });
 });
 
+// Hunter stats are now fully derived from completed-task priorities (see
+// deriveHunterStats in useStore.ts) rather than an independently-settable
+// counter, so these tests can no longer seed an arbitrary starting `hunter`
+// disconnected from `tasks` — the store-wide subscribe would immediately
+// recompute it from whatever's actually in `tasks` anyway. Instead, a desired
+// starting XP total is built out of already-completed filler quests.
+function doneFiller(id: string, priority: 'low' | 'medium' | 'high' = 'medium'): Task {
+  return {
+    id,
+    listId: 'l1',
+    parentTaskId: null,
+    title: 'Warm-up quest',
+    priority,
+    done: true,
+    position: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    progress: 100,
+  };
+}
+
+// Mirrors the leveling loop in deriveHunterStats, so tests can work out — from
+// the real xpForLevel curve — how many 35-XP filler completions land a hunter
+// at a given level, without hardcoding numbers that only happened to match an
+// old, independently-tracked XP counter.
+function levelForTotalXp(totalXp: number): { level: number; xp: number } {
+  let level = 1;
+  let xp = totalXp;
+  let need = xpForLevel(level);
+  while (xp >= need) {
+    xp -= need;
+    level += 1;
+    need = xpForLevel(level);
+  }
+  return { level, xp };
+}
+
 describe('toggleTask XP logic', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -65,12 +102,12 @@ describe('toggleTask XP logic', () => {
     const { tasksApi } = await import('../api/services');
     const { useStore } = await import('./useStore');
 
-    const baseTask = {
+    const baseTask: Task = {
       id: 't1',
       listId: 'l1',
       parentTaskId: null,
       title: 'Grind the dungeon',
-      priority: 'high' as const,
+      priority: 'high',
       done: false,
       position: 0,
       createdAt: new Date().toISOString(),
@@ -78,10 +115,8 @@ describe('toggleTask XP logic', () => {
       progress: 0,
     };
 
-    useStore.setState({
-      tasks: [baseTask],
-      hunter: { level: 1, xp: 60, tasksCompleted: 0, highestLevel: 1 },
-    });
+    // 3 already-completed medium-priority quests = 60 XP baseline (3 × 20), level 1
+    useStore.setState({ tasks: [baseTask, doneFiller('f1'), doneFiller('f2'), doneFiller('f3')] });
 
     vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: true });
 
@@ -90,8 +125,8 @@ describe('toggleTask XP logic', () => {
 
     expect(useStore.getState().hunter.level).toBe(2);
     expect(useStore.getState().hunter.xp).toBe(5);
-    expect(useStore.getState().hunter.tasksCompleted).toBe(1);
-    expect(useStore.getState().tasks[0].done).toBe(true);
+    expect(useStore.getState().hunter.tasksCompleted).toBe(4); // 3 filler + this one
+    expect(useStore.getState().tasks.find((t) => t.id === 't1')?.done).toBe(true);
 
     // un-completing should reverse the level-up exactly
     vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: false });
@@ -99,7 +134,7 @@ describe('toggleTask XP logic', () => {
 
     expect(useStore.getState().hunter.level).toBe(1);
     expect(useStore.getState().hunter.xp).toBe(60);
-    expect(useStore.getState().hunter.tasksCompleted).toBe(0);
+    expect(useStore.getState().hunter.tasksCompleted).toBe(3);
     // reversing the level-up doesn't erase the peak once reached — badges earned stay earned
     expect(useStore.getState().hunter.highestLevel).toBe(2);
   });
@@ -109,22 +144,20 @@ describe('toggleTask XP logic', () => {
     const { useStore } = await import('./useStore');
     const { useToastStore } = await import('./useToastStore');
 
-    const baseTask = {
+    const baseTask: Task = {
       id: 't1',
       listId: 'l1',
       parentTaskId: null,
       title: 'Grind the dungeon',
-      priority: 'high' as const,
+      priority: 'high',
       done: false,
       position: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       progress: 0,
     };
-    useStore.setState({
-      tasks: [baseTask],
-      hunter: { level: 1, xp: 60, tasksCompleted: 0, highestLevel: 1 },
-    });
+    // 3 already-completed medium-priority quests = 60 XP baseline (3 × 20), level 1
+    useStore.setState({ tasks: [baseTask, doneFiller('f1'), doneFiller('f2'), doneFiller('f3')] });
     useToastStore.setState({ toasts: [] });
 
     vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: true });
@@ -147,24 +180,33 @@ describe('toggleTask XP logic', () => {
     const { useStore } = await import('./useStore');
     const { useToastStore } = await import('./useToastStore');
 
-    const baseTask = {
+    const baseTask: Task = {
       id: 't1',
       listId: 'l1',
       parentTaskId: null,
       title: 'Clear the D-Rank gate',
-      priority: 'high' as const,
+      priority: 'high',
       done: false,
       position: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       progress: 0,
     };
-    // one level short of D-Rank (level 10); 130 + 35(high) = 165, crosses the
-    // level-9 threshold (156) -> level 10 with 9 XP remaining, no further level-up
-    useStore.setState({
-      tasks: [baseTask],
-      hunter: { level: 9, xp: 130, tasksCompleted: 0, highestLevel: 9 },
-    });
+
+    // Find how many 35-XP filler completions land exactly at level 9 (one
+    // below D-Rank's level-10 badge), so completing baseTask is the one
+    // completion that crosses the threshold.
+    let fillerCount = 1;
+    while (
+      !(
+        levelForTotalXp(fillerCount * 35).level === 9 &&
+        levelForTotalXp((fillerCount + 1) * 35).level === 10
+      )
+    ) {
+      fillerCount++;
+    }
+    const fillers = Array.from({ length: fillerCount }, (_, i) => doneFiller(`f${i}`, 'high'));
+    useStore.setState({ tasks: [baseTask, ...fillers] });
     useToastStore.setState({ toasts: [] });
 
     vi.mocked(tasksApi.update).mockResolvedValue({ ...baseTask, done: true });
